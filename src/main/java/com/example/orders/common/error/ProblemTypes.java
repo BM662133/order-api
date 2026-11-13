@@ -9,6 +9,7 @@ public final class ProblemTypes {
 
     public static final URI UNAUTHENTICATED = URI.create(BASE + "unauthenticated");
     public static final URI INTERNAL_ERROR = URI.create(BASE + "internal-error");
+    public static final URI NOT_FOUND = URI.create(BASE + "not-found");
     public static final URI ILLEGAL_STATUS_TRANSITION = URI.create(BASE + "illegal-status-transition");
 
     private ProblemTypes() {

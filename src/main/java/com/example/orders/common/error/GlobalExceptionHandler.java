@@ -2,12 +2,16 @@ package com.example.orders.common.error;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Renders every error as RFC 7807 {@link ProblemDetail}. Spring MVC's own exceptions (400 on bad
@@ -25,6 +29,17 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setTitle(ex.title());
         ex.properties().forEach(problem::setProperty);
         return ResponseEntity.status(ex.status()).body(problem);
+    }
+
+    /** Spring's default detail ("No static resource ...") leaks implementation details; describe the route instead. */
+    @Override
+    protected ResponseEntity<Object> handleNoResourceFoundException(NoResourceFoundException ex, HttpHeaders headers,
+            HttpStatusCode status, WebRequest request) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                status, "No endpoint " + ex.getHttpMethod() + " /" + ex.getResourcePath() + ".");
+        problem.setType(ProblemTypes.NOT_FOUND);
+        problem.setTitle("Not Found");
+        return handleExceptionInternal(ex, problem, headers, status, request);
     }
 
     @ExceptionHandler(Exception.class)

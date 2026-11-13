@@ -23,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.example.orders.tenant.PartnerRepository;
 
-@WebMvcTest
+@WebMvcTest(controllers = GlobalExceptionHandlerTest.ProbeController.class)
 @Import(GlobalExceptionHandlerTest.ProbeController.class)
 class GlobalExceptionHandlerTest {
 
@@ -81,10 +81,13 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    void unknownRouteIsAProblemDetail404() throws Exception {
+    void unknownRouteIsAProblemDetail404DescribingTheRoute() throws Exception {
         mockMvc.perform(get("/test/does-not-exist"))
                 .andExpect(status().isNotFound())
                 .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
-                .andExpect(jsonPath("$.status").value(404));
+                .andExpect(jsonPath("$.type").value(ProblemTypes.NOT_FOUND.toString()))
+                .andExpect(jsonPath("$.title").value("Not Found"))
+                .andExpect(jsonPath("$.detail").value("No endpoint GET /test/does-not-exist."))
+                .andExpect(jsonPath("$.instance").value("/test/does-not-exist"));
     }
 }
