@@ -31,6 +31,11 @@ class PartnerAuthenticationTest {
         String whoAmI(PartnerContext partner) {
             return partner.partnerId();
         }
+
+        @GetMapping("/partners/{partnerId}/probe")
+        String whoAmIOnPartnerPath(PartnerContext partner) {
+            return partner.partnerId();
+        }
     }
 
     @Autowired
@@ -62,6 +67,27 @@ class PartnerAuthenticationTest {
     void inactivePartnerIsUnauthenticated() throws Exception {
         expectUnauthenticated(
                 get("/orders/probe").header(PartnerAuthenticationInterceptor.PARTNER_HEADER, "partner-suspended"));
+    }
+
+    @Test
+    void matchingPathPartnerIsAllowed() throws Exception {
+        mockMvc.perform(get("/partners/partner-a/probe").header(PartnerAuthenticationInterceptor.PARTNER_HEADER, "partner-a"))
+                .andExpect(status().isOk())
+                .andExpect(content().string("partner-a"));
+    }
+
+    @Test
+    void differentPathPartnerIsForbidden() throws Exception {
+        mockMvc.perform(get("/partners/partner-b/probe").header(PartnerAuthenticationInterceptor.PARTNER_HEADER, "partner-a"))
+                .andExpect(status().isForbidden())
+                .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
+                .andExpect(jsonPath("$.type").value(ProblemTypes.PARTNER_MISMATCH.toString()))
+                .andExpect(jsonPath("$.title").value("Partner mismatch"));
+    }
+
+    @Test
+    void authenticationIsCheckedBeforePathPartner() throws Exception {
+        expectUnauthenticated(get("/partners/partner-b/probe"));
     }
 
     private void expectUnauthenticated(RequestBuilder request) throws Exception {

@@ -11,6 +11,11 @@ public final class ProblemTypes {
     public static final URI INTERNAL_ERROR = URI.create(BASE + "internal-error");
     public static final URI NOT_FOUND = URI.create(BASE + "not-found");
     public static final URI ILLEGAL_STATUS_TRANSITION = URI.create(BASE + "illegal-status-transition");
+    public static final URI VALIDATION_ERROR = URI.create(BASE + "validation-error");
+    public static final URI MALFORMED_REQUEST = URI.create(BASE + "malformed-request");
+    public static final URI INVALID_PARAMETER = URI.create(BASE + "invalid-parameter");
+    public static final URI PARTNER_MISMATCH = URI.create(BASE + "partner-mismatch");
+    public static final URI ORDER_NOT_FOUND = URI.create(BASE + "order-not-found");
 
     private ProblemTypes() {
     }

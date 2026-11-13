@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Order API: Spring Boot 3.5.x (Java 21, Maven), root package `com.example.orders`. Partners order a SIM/plan for a subscriber; orders move through the `OrderStatus` state machine. Built in slices (see `git log`). Stay on Spring Boot 3.x (start.spring.io only generates 4.x, so don't regenerate from it).
 
-Packages are by feature: `common/error` (ProblemDetail handling), `common/time` (Clock), `tenant` (partner auth), `order/domain` (state machine).
+Packages are by feature: `common/error` (ProblemDetail handling), `common/time` (Clock), `tenant` (partner auth), `plan` (plan catalogue + `@KnownPlan`), and `order/{api,app,domain,persistence}` (controller + DTOs → service → entity/state machine → repository).
 
 ## Commands
 
@@ -38,7 +38,7 @@ There is no linter or formatter configured.
 ## Errors, tenancy and state
 
 - **Errors:** throw a subclass of `common.error.ApiException` (it carries status, `type` URI, title and extra `properties()`); `GlobalExceptionHandler` renders it as `application/problem+json`. Add new `type` URIs to `ProblemTypes` and never change existing ones. Unexpected exceptions become a generic 500 — never put internal details in a response.
-- **Partner auth:** `PartnerAuthenticationInterceptor` resolves the `X-Partner-Id` header (a stand-in for real auth) on the paths in `TenantWebConfig.AUTHENTICATED_PATHS` (`/partners/**`, `/orders/**`); missing/unknown/inactive → 401. Controllers get the caller by declaring a `PartnerContext` parameter. New API paths must be under those patterns.
+- **Partner auth:** `PartnerAuthenticationInterceptor` resolves the `X-Partner-Id` header (a stand-in for real auth) on the paths in `TenantWebConfig.AUTHENTICATED_PATHS` (`/partners/**`, `/orders/**`); missing/unknown/inactive → 401. Controllers get the caller by declaring a `PartnerContext` parameter. New API paths must be under those patterns. A route path variable named exactly `{partnerId}` is checked against the caller by the interceptor (403 `partner-mismatch`, before body validation) — name it that way and don't re-check it in controllers.
 - **Tenant isolation:** repositories extend Spring Data `Repository` (not `JpaRepository`) and declare only the finders they need; tenant-owned data is looked up by `partnerId` as well as id, and another partner's resource is a 404, never a 403.
 - **Status changes** go through `OrderStatus.checkTransitionTo`, which throws `IllegalTransitionException` (409). Allowed transitions are declared in its exhaustive `switch`; update `OrderStatusTest.LEGAL` alongside it.
 - **Inject `Clock`** instead of calling `Instant.now()`, so tests can control time.
