@@ -15,5 +15,10 @@ public interface OrderRepository extends Repository<Order, UUID> {
 
     Order save(Order order);
 
+    /** Flushes immediately, so a unique-constraint violation surfaces from this call, not at commit. */
+    Order saveAndFlush(Order order);
+
     Optional<Order> findByIdAndPartnerId(UUID id, String partnerId);
+
+    Optional<Order> findByPartnerIdAndIdempotencyKey(String partnerId, String idempotencyKey);
 }

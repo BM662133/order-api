@@ -42,6 +42,7 @@ There is no linter or formatter configured.
 - **Tenant isolation:** repositories extend Spring Data `Repository` (not `JpaRepository`) and declare only the finders they need; tenant-owned data is looked up by `partnerId` as well as id, and another partner's resource is a 404, never a 403.
 - **Status changes** go through `OrderStatus.checkTransitionTo`, which throws `IllegalTransitionException` (409). Allowed transitions are declared in its exhaustive `switch`; update `OrderStatusTest.LEGAL` alongside it.
 - **Inject `Clock`** instead of calling `Instant.now()`, so tests can control time.
+- **Idempotent create:** `POST /partners/{partnerId}/orders` requires `Idempotency-Key` (1–100 visible ASCII). The unique constraint `uq_orders_partner_idempotency (partner_id, idempotency_key)` is the guarantee; `OrderService.create` is deliberately **not** `@Transactional` — the insert runs in `OrderWriter` (separate bean, `saveAndFlush`) so a duplicate-key `DataIntegrityViolationException` can be caught outside the failed transaction and the winner re-read. Same key + same normalized request (`RequestFingerprint`) → replay (201 + `Idempotent-Replayed: true`, current order state); different request → 422. If you add a create-request field, add it to `RequestFingerprint` and bump its `v1` prefix.
 
 ## Testing notes
 

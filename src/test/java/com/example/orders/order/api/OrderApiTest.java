@@ -31,6 +31,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import com.jayway.jsonpath.JsonPath;
 
 import com.example.orders.common.error.ProblemTypes;
+import com.example.orders.order.app.IdempotencyKey;
 import com.example.orders.tenant.PartnerAuthenticationInterceptor;
 
 /** Full stack against H2 with the Flyway seed data (partner-a, partner-b, plans BASIC_5G / LEGACY_3G ...). */
@@ -51,6 +52,7 @@ class OrderApiTest {
     private ResultActions createOrder(String callerPartner, String pathPartner, String body) throws Exception {
         return mockMvc.perform(post("/partners/{partnerId}/orders", pathPartner)
                 .header(PARTNER, callerPartner)
+                .header(IdempotencyKey.HEADER, UUID.randomUUID().toString())
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(body));
     }

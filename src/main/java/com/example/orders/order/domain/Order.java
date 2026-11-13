@@ -28,6 +28,14 @@ public class Order {
     @Column(name = "partner_id", nullable = false, updatable = false)
     private String partnerId;
 
+    /** Unique per partner (uq_orders_partner_idempotency). */
+    @Column(name = "idempotency_key", nullable = false, updatable = false)
+    private String idempotencyKey;
+
+    /** SHA-256 of the normalized create request; tells a genuine retry from a reused key. */
+    @Column(name = "request_fingerprint", nullable = false, updatable = false)
+    private String requestFingerprint;
+
     /** E.164 digits without the leading '+'. */
     @Column(nullable = false, updatable = false)
     private String msisdn;
@@ -56,9 +64,12 @@ public class Order {
     protected Order() {
     }
 
-    private Order(String partnerId, String msisdn, String planCode, SimType simType, Instant now) {
+    private Order(String partnerId, String idempotencyKey, String requestFingerprint, String msisdn,
+            String planCode, SimType simType, Instant now) {
         this.id = UUID.randomUUID();
         this.partnerId = Objects.requireNonNull(partnerId, "partnerId");
+        this.idempotencyKey = Objects.requireNonNull(idempotencyKey, "idempotencyKey");
+        this.requestFingerprint = Objects.requireNonNull(requestFingerprint, "requestFingerprint");
         this.msisdn = normalizeMsisdn(Objects.requireNonNull(msisdn, "msisdn"));
         this.planCode = Objects.requireNonNull(planCode, "planCode");
         this.simType = Objects.requireNonNull(simType, "simType");
@@ -68,8 +79,9 @@ public class Order {
     }
 
     /** @param msisdn E.164, with or without the leading '+' (format is validated at the API boundary) */
-    public static Order create(String partnerId, String msisdn, String planCode, SimType simType, Clock clock) {
-        return new Order(partnerId, msisdn, planCode, simType, now(clock));
+    public static Order create(String partnerId, String idempotencyKey, String requestFingerprint, String msisdn,
+            String planCode, SimType simType, Clock clock) {
+        return new Order(partnerId, idempotencyKey, requestFingerprint, msisdn, planCode, simType, now(clock));
     }
 
     /** @throws IllegalTransitionException if the state machine does not allow {@code target} */
@@ -82,7 +94,8 @@ public class Order {
         this.updatedAt = now(clock);
     }
 
-    private static String normalizeMsisdn(String msisdn) {
+    /** E.164 with or without '+' to the stored form (digits only). */
+    public static String normalizeMsisdn(String msisdn) {
         return msisdn.startsWith("+") ? msisdn.substring(1) : msisdn;
     }
 
@@ -97,6 +110,14 @@ public class Order {
 
     public String getPartnerId() {
         return partnerId;
+    }
+
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
+
+    public String getRequestFingerprint() {
+        return requestFingerprint;
     }
 
     public String getMsisdn() {

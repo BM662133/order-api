@@ -14,9 +14,10 @@ class OrderTest {
 
     private static final Instant T0 = Instant.parse("2026-01-01T10:00:00.123456Z");
     private static final Clock CLOCK = Clock.fixed(T0, ZoneOffset.UTC);
+    private static final String FINGERPRINT = "f".repeat(64);
 
     private static Order newOrder() {
-        return Order.create("partner-a", "+447700900123", "BASIC_5G", SimType.ESIM, CLOCK);
+        return Order.create("partner-a", "key-1", FINGERPRINT, "+447700900123", "BASIC_5G", SimType.ESIM, CLOCK);
     }
 
     @Test
@@ -25,6 +26,8 @@ class OrderTest {
 
         assertThat(order.getId()).isNotNull();
         assertThat(order.getPartnerId()).isEqualTo("partner-a");
+        assertThat(order.getIdempotencyKey()).isEqualTo("key-1");
+        assertThat(order.getRequestFingerprint()).isEqualTo(FINGERPRINT);
         assertThat(order.getPlanCode()).isEqualTo("BASIC_5G");
         assertThat(order.getSimType()).isEqualTo(SimType.ESIM);
         assertThat(order.getStatus()).isEqualTo(OrderStatus.CREATED);
@@ -35,7 +38,7 @@ class OrderTest {
     @Test
     void msisdnIsStoredWithoutLeadingPlus() {
         assertThat(newOrder().getMsisdn()).isEqualTo("447700900123");
-        assertThat(Order.create("partner-a", "447700900123", "BASIC_5G", SimType.ESIM, CLOCK).getMsisdn())
+        assertThat(Order.create("partner-a", "key-1", FINGERPRINT, "447700900123", "BASIC_5G", SimType.ESIM, CLOCK).getMsisdn())
                 .isEqualTo("447700900123");
     }
 
@@ -48,7 +51,7 @@ class OrderTest {
     void timestampsAreTruncatedToMicrosecondsToMatchTheDatabase() {
         Clock nanoClock = Clock.fixed(Instant.parse("2026-01-01T10:00:00.123456789Z"), ZoneOffset.UTC);
 
-        Order order = Order.create("partner-a", "+447700900123", "BASIC_5G", SimType.ESIM, nanoClock);
+        Order order = Order.create("partner-a", "key-1", FINGERPRINT, "+447700900123", "BASIC_5G", SimType.ESIM, nanoClock);
 
         assertThat(order.getCreatedAt()).isEqualTo(Instant.parse("2026-01-01T10:00:00.123456Z"));
     }

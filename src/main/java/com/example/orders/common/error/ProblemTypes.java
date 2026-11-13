@@ -16,6 +16,8 @@ public final class ProblemTypes {
     public static final URI INVALID_PARAMETER = URI.create(BASE + "invalid-parameter");
     public static final URI PARTNER_MISMATCH = URI.create(BASE + "partner-mismatch");
     public static final URI ORDER_NOT_FOUND = URI.create(BASE + "order-not-found");
+    public static final URI INVALID_IDEMPOTENCY_KEY = URI.create(BASE + "invalid-idempotency-key");
+    public static final URI IDEMPOTENCY_KEY_REUSED = URI.create(BASE + "idempotency-key-reused");
 
     private ProblemTypes() {
     }
