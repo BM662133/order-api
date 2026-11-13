@@ -55,6 +55,12 @@ public class OrderController {
         return response.body(OrderResponse.from(order));
     }
 
+    /** Idempotent: cancelling an already-cancelled order returns it unchanged with 200. */
+    @PostMapping("/orders/{orderId}/cancel")
+    public OrderResponse cancel(PartnerContext partner, @PathVariable UUID orderId) {
+        return OrderResponse.from(orderService.cancel(partner, orderId));
+    }
+
     @GetMapping("/orders/{orderId}")
     public OrderResponse get(PartnerContext partner, @PathVariable UUID orderId) {
         return OrderResponse.from(orderService.get(partner, orderId));

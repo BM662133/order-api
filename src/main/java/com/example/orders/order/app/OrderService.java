@@ -6,6 +6,7 @@ import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,6 +20,8 @@ import com.example.orders.tenant.PartnerContext;
 public class OrderService {
 
     private static final Logger log = LoggerFactory.getLogger(OrderService.class);
+
+    static final int MAX_CANCEL_ATTEMPTS = 3;
 
     private final OrderRepository orderRepository;
     private final OrderWriter orderWriter;
@@ -61,6 +64,30 @@ public class OrderService {
             log.debug("Idempotency race lost for partner {}; returning the winning order", partner.partnerId());
             return findReplay(partner, key, fingerprint).orElseThrow(() -> new IllegalStateException(
                     "Idempotency key conflict but no order found for partner " + partner.partnerId(), ex));
+        }
+    }
+
+    /**
+     * Cancels the partner's order; cancelling an already-cancelled order is a no-op. A concurrent update
+     * is retried in a fresh transaction that re-reads the order, so the decision is always made on its
+     * latest state.
+     *
+     * @throws OrderNotFoundException if the order does not exist or belongs to another partner
+     * @throws com.example.orders.order.domain.CancellationNotAllowedException while PROVISIONING
+     * @throws com.example.orders.order.domain.IllegalTransitionException from ACTIVE or FAILED
+     * @throws OrderConcurrentlyModifiedException if every attempt hit a concurrent update
+     */
+    public Order cancel(PartnerContext partner, UUID orderId) {
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return orderWriter.cancel(partner.partnerId(), orderId);
+            } catch (ConcurrencyFailureException ex) {
+                if (attempt >= MAX_CANCEL_ATTEMPTS) {
+                    throw new OrderConcurrentlyModifiedException(orderId, ex);
+                }
+                log.debug("Concurrent update cancelling order {} (attempt {}, {}); retrying", orderId, attempt,
+                        ex.getClass().getSimpleName());
+            }
         }
     }
 

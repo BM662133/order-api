@@ -94,6 +94,27 @@ public class Order {
         this.updatedAt = now(clock);
     }
 
+    /**
+     * Client-requested cancellation. The state machine also allows PROVISIONING -> CANCELLED, but that
+     * edge belongs to the provisioning worker after it has undone the activation, so clients may not
+     * take it directly.
+     *
+     * @return {@code true} if the order was cancelled now, {@code false} if it was already CANCELLED
+     *         (cancel is idempotent)
+     * @throws CancellationNotAllowedException while PROVISIONING
+     * @throws IllegalTransitionException from ACTIVE or FAILED
+     */
+    public boolean cancel(Clock clock) {
+        return switch (status) {
+            case CANCELLED -> false;
+            case PROVISIONING -> throw new CancellationNotAllowedException(id, status);
+            case CREATED, VALIDATED, ACTIVE, FAILED -> {
+                transitionTo(OrderStatus.CANCELLED, clock);
+                yield true;
+            }
+        };
+    }
+
     /** E.164 with or without '+' to the stored form (digits only). */
     public static String normalizeMsisdn(String msisdn) {
         return msisdn.startsWith("+") ? msisdn.substring(1) : msisdn;

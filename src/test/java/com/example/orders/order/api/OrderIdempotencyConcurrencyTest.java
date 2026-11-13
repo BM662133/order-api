@@ -2,17 +2,10 @@ package com.example.orders.order.api;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 import java.util.function.IntFunction;
 
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -24,6 +17,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import com.example.orders.order.app.IdempotencyKey;
+import com.example.orders.support.Concurrently;
 import com.example.orders.tenant.PartnerAuthenticationInterceptor;
 import com.jayway.jsonpath.JsonPath;
 
@@ -43,38 +37,16 @@ class OrderIdempotencyConcurrencyTest {
     @Autowired
     private JdbcTemplate jdbc;
 
-    private final ExecutorService pool = Executors.newFixedThreadPool(THREADS);
-
-    @AfterEach
-    void shutDown() {
-        pool.shutdownNow();
-    }
-
-    /** Releases all requests at the same instant and collects the responses. */
+    /** Sends THREADS create requests with the same key at the same instant. */
     private List<ResponseEntity<String>> race(String key, IntFunction<String> bodyForThread) throws Exception {
-        CountDownLatch ready = new CountDownLatch(THREADS);
-        CountDownLatch go = new CountDownLatch(1);
-        List<Future<ResponseEntity<String>>> futures = new ArrayList<>();
-        for (int i = 0; i < THREADS; i++) {
-            String body = bodyForThread.apply(i);
-            futures.add(pool.submit(() -> {
-                HttpHeaders headers = new HttpHeaders();
-                headers.setContentType(MediaType.APPLICATION_JSON);
-                headers.set(PartnerAuthenticationInterceptor.PARTNER_HEADER, "partner-a");
-                headers.set(IdempotencyKey.HEADER, key);
-                ready.countDown();
-                go.await();
-                return restTemplate.postForEntity("/partners/partner-a/orders", new HttpEntity<>(body, headers),
-                        String.class);
-            }));
-        }
-        assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
-        go.countDown();
-        List<ResponseEntity<String>> responses = new ArrayList<>();
-        for (Future<ResponseEntity<String>> future : futures) {
-            responses.add(future.get(30, TimeUnit.SECONDS));
-        }
-        return responses;
+        return Concurrently.run(THREADS, i -> {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set(PartnerAuthenticationInterceptor.PARTNER_HEADER, "partner-a");
+            headers.set(IdempotencyKey.HEADER, key);
+            HttpEntity<String> request = new HttpEntity<>(bodyForThread.apply(i), headers);
+            return () -> restTemplate.postForEntity("/partners/partner-a/orders", request, String.class);
+        });
     }
 
     private int rowsFor(String key) {

@@ -16,7 +16,11 @@ public abstract class ApiException extends RuntimeException {
     private final String title;
 
     protected ApiException(HttpStatus status, URI type, String title, String detail) {
-        super(detail);
+        this(status, type, title, detail, null);
+    }
+
+    protected ApiException(HttpStatus status, URI type, String title, String detail, Throwable cause) {
+        super(detail, cause);
         this.status = status;
         this.type = type;
         this.title = title;

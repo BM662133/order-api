@@ -9,6 +9,8 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 class OrderTest {
 
@@ -83,6 +85,77 @@ class OrderTest {
                             .containsEntry("targetStatus", OrderStatus.ACTIVE);
                 });
         assertThat(order.getStatus()).isEqualTo(OrderStatus.CREATED);
+        assertThat(order.getUpdatedAt()).isEqualTo(T0);
+    }
+
+    /** An order driven along legal transitions into {@code target}, with all timestamps at T0. */
+    private static Order orderIn(OrderStatus target) {
+        Order order = newOrder();
+        switch (target) {
+            case CREATED -> { }
+            case VALIDATED -> order.transitionTo(OrderStatus.VALIDATED, CLOCK);
+            case PROVISIONING -> {
+                order.transitionTo(OrderStatus.VALIDATED, CLOCK);
+                order.transitionTo(OrderStatus.PROVISIONING, CLOCK);
+            }
+            case ACTIVE -> {
+                order.transitionTo(OrderStatus.VALIDATED, CLOCK);
+                order.transitionTo(OrderStatus.PROVISIONING, CLOCK);
+                order.transitionTo(OrderStatus.ACTIVE, CLOCK);
+            }
+            case FAILED, CANCELLED -> order.transitionTo(target, CLOCK);
+        }
+        assertThat(order.getStatus()).isEqualTo(target);
+        return order;
+    }
+
+    @ParameterizedTest
+    @EnumSource(names = {"CREATED", "VALIDATED"})
+    void cancelFromAnEarlyStateCancels(OrderStatus from) {
+        Order order = orderIn(from);
+        Instant later = T0.plusSeconds(5);
+
+        boolean changed = order.cancel(Clock.fixed(later, ZoneOffset.UTC));
+
+        assertThat(changed).isTrue();
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(order.getUpdatedAt()).isEqualTo(later);
+    }
+
+    @Test
+    void cancelWhenAlreadyCancelledIsANoOp() {
+        Order order = orderIn(OrderStatus.CANCELLED);
+
+        boolean changed = order.cancel(Clock.fixed(T0.plusSeconds(5), ZoneOffset.UTC));
+
+        assertThat(changed).isFalse();
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(order.getUpdatedAt()).isEqualTo(T0);
+    }
+
+    @Test
+    void cancelWhileProvisioningIsNotAllowedEvenThoughTheStateMachineHasThatEdge() {
+        assertThat(OrderStatus.PROVISIONING.canTransitionTo(OrderStatus.CANCELLED)).isTrue();
+        Order order = orderIn(OrderStatus.PROVISIONING);
+
+        assertThatThrownBy(() -> order.cancel(CLOCK))
+                .isInstanceOfSatisfying(CancellationNotAllowedException.class, ex -> assertThat(ex.properties())
+                        .containsEntry("orderId", order.getId())
+                        .containsEntry("currentStatus", OrderStatus.PROVISIONING));
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.PROVISIONING);
+    }
+
+    @ParameterizedTest
+    @EnumSource(names = {"ACTIVE", "FAILED"})
+    void cancelFromAFinalStateIsAnIllegalTransition(OrderStatus from) {
+        Order order = orderIn(from);
+
+        assertThatThrownBy(() -> order.cancel(CLOCK))
+                .isInstanceOfSatisfying(IllegalTransitionException.class, ex -> {
+                    assertThat(ex.from()).isEqualTo(from);
+                    assertThat(ex.to()).isEqualTo(OrderStatus.CANCELLED);
+                });
+        assertThat(order.getStatus()).isEqualTo(from);
         assertThat(order.getUpdatedAt()).isEqualTo(T0);
     }
 

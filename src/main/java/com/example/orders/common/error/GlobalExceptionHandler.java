@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.exc.InvalidFormatException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.TypeMismatchException;
+import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -114,6 +115,20 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setType(ProblemTypes.NOT_FOUND);
         problem.setTitle("Not Found");
         return handleExceptionInternal(ex, problem, headers, status, request);
+    }
+
+    /**
+     * Optimistic-lock and lock-acquisition failures (both are {@link ConcurrencyFailureException}) that
+     * were not retried, or kept failing. The client may retry.
+     */
+    @ExceptionHandler(ConcurrencyFailureException.class)
+    public ResponseEntity<ProblemDetail> handleConcurrencyFailure(ConcurrencyFailureException ex) {
+        log.debug("Concurrent modification", ex);
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.CONFLICT, "The resource was modified concurrently. Retry the request.");
+        problem.setType(ProblemTypes.CONCURRENT_MODIFICATION);
+        problem.setTitle("Concurrent modification");
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(problem);
     }
 
     @ExceptionHandler(Exception.class)
