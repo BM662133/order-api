@@ -19,8 +19,10 @@ import java.util.concurrent.TimeoutException;
 
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.KafkaException;
+import org.apache.kafka.common.errors.RecordTooLargeException;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.kafka.core.KafkaProducerException;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 
@@ -50,6 +52,11 @@ class KafkaTransportTest {
         return CompletableFuture.failedFuture(cause);
     }
 
+    /** What the producer reports when the broker doesn't answer: Kafka's own (retriable) timeout. */
+    private static org.apache.kafka.common.errors.TimeoutException kafkaTimeout(String message) {
+        return new org.apache.kafka.common.errors.TimeoutException(message);
+    }
+
     // ---------- deliver (single) ----------
 
     @Test
@@ -76,6 +83,14 @@ class KafkaTransportTest {
         assertThatThrownBy(() -> transport.deliver(event))
                 .isInstanceOf(OutboxPublishException.class)
                 .hasRootCauseInstanceOf(KafkaException.class);
+    }
+
+    @Test
+    void deliverAlsoThrowsWhenTheBrokerIsUnavailable() {
+        EventEnvelope event = event();
+        when(template.send(recordOf(event))).thenReturn(failing(kafkaTimeout("metadata")));
+
+        assertThatThrownBy(() -> transport.deliver(event)).isInstanceOf(OutboxPublishException.class);
     }
 
     // ---------- deliverAll (batch) ----------
@@ -108,7 +123,7 @@ class KafkaTransportTest {
         when(template.send(recordOf(a))).thenReturn(acked());
         when(template.send(recordOf(b))).thenReturn(ackB);
         when(template.send(recordOf(c))).thenAnswer(invocation -> {
-            ackB.completeExceptionally(new KafkaException("not leader"));
+            ackB.completeExceptionally(new RecordTooLargeException("record too large"));
             return acked();
         });
 
@@ -117,44 +132,80 @@ class KafkaTransportTest {
         assertThat(results.get(0)).isInstanceOf(DeliveryResult.Delivered.class);
         assertThat(results.get(1)).isInstanceOfSatisfying(DeliveryResult.Failed.class, f -> {
             assertThat(f.error()).isInstanceOf(OutboxPublishException.class);
-            assertThat(f.error()).hasRootCauseInstanceOf(KafkaException.class);
+            assertThat(f.error()).hasRootCauseInstanceOf(RecordTooLargeException.class);
         });
         assertThat(results.get(2)).isInstanceOf(DeliveryResult.Delivered.class);
     }
 
     @Test
-    void aSendThatThrowsStopsTheBatchAndTheRestAreNotAttempted() {
+    void aDeliveryTimeoutAfterSendingMeansTheBrokerIsUnavailable() {
+        EventEnvelope a = event();
+        EventEnvelope b = event();
+        CompletableFuture<SendResult<String, String>> ackA = new CompletableFuture<>();
+        when(template.send(recordOf(a))).thenReturn(ackA);
+        when(template.send(recordOf(b))).thenAnswer(invocation -> {
+            // As Spring reports it: KafkaProducerException wrapping the producer's expiry timeout.
+            ackA.completeExceptionally(new KafkaProducerException(null, "Failed to send",
+                    kafkaTimeout("Expiring 1 record(s) for orders.events-0: 10000 ms has passed")));
+            return acked();
+        });
+
+        List<DeliveryResult> results = transport.deliverAll(List.of(a, b));
+
+        assertThat(results.get(0)).isInstanceOfSatisfying(DeliveryResult.Unavailable.class,
+                u -> assertThat(u.error()).isInstanceOf(OutboxPublishException.class));
+        assertThat(results.get(1)).isInstanceOf(DeliveryResult.Delivered.class);
+    }
+
+    @Test
+    void aSendThatThrowsBecauseTheBrokerIsUnavailableStopsTheBatch() {
         EventEnvelope a = event();
         EventEnvelope b = event();
         EventEnvelope c = event();
         when(template.send(recordOf(a))).thenReturn(acked());
-        when(template.send(recordOf(b))).thenThrow(new KafkaException("Send failed"));
+        when(template.send(recordOf(b))).thenThrow(new KafkaException("Send failed", kafkaTimeout("metadata")));
 
         List<DeliveryResult> results = transport.deliverAll(List.of(a, b, c));
 
         assertThat(results.get(0)).isInstanceOf(DeliveryResult.Delivered.class);
-        assertThat(results.get(1)).isInstanceOf(DeliveryResult.Failed.class);
+        assertThat(results.get(1)).isInstanceOf(DeliveryResult.Unavailable.class);
         assertThat(results.get(2)).isInstanceOf(DeliveryResult.NotAttempted.class);
         verify(template, never()).send(recordOf(c));
     }
 
     @Test
-    void aSendThatFailsImmediatelyAlsoStopsTheBatch() {
+    void aSendThatFailsImmediatelyOnMetadataAlsoStopsTheBatch() {
         EventEnvelope a = event();
         EventEnvelope b = event();
-        when(template.send(recordOf(a))).thenReturn(failing(new org.apache.kafka.common.errors.TimeoutException(
-                "Topic orders.events not present in metadata after 500 ms.")));
+        when(template.send(recordOf(a))).thenReturn(failing(
+                kafkaTimeout("Topic orders.events not present in metadata after 500 ms.")));
 
         List<DeliveryResult> results = transport.deliverAll(List.of(a, b));
 
-        assertThat(results.get(0)).isInstanceOfSatisfying(DeliveryResult.Failed.class,
-                f -> assertThat(f.error()).hasRootCauseInstanceOf(org.apache.kafka.common.errors.TimeoutException.class));
+        assertThat(results.get(0)).isInstanceOfSatisfying(DeliveryResult.Unavailable.class, u -> assertThat(u.error())
+                .hasRootCauseInstanceOf(org.apache.kafka.common.errors.TimeoutException.class));
         assertThat(results.get(1)).isInstanceOf(DeliveryResult.NotAttempted.class);
         verify(template, times(1)).send(any(ProducerRecord.class));
     }
 
     @Test
-    void acksStillPendingAtTheDeadlineFailWhileTheOthersSucceed() {
+    void aRecordThatFailsImmediatelyForItsOwnReasonDoesNotStopTheBatch() {
+        EventEnvelope a = event();
+        EventEnvelope b = event();
+        EventEnvelope c = event();
+        when(template.send(recordOf(a))).thenThrow(new KafkaException("Send failed"));
+        when(template.send(recordOf(b))).thenReturn(failing(new RecordTooLargeException("record too large")));
+        when(template.send(recordOf(c))).thenReturn(acked());
+
+        List<DeliveryResult> results = transport.deliverAll(List.of(a, b, c));
+
+        assertThat(results.get(0)).isInstanceOf(DeliveryResult.Failed.class);
+        assertThat(results.get(1)).isInstanceOf(DeliveryResult.Failed.class);
+        assertThat(results.get(2)).isInstanceOf(DeliveryResult.Delivered.class);
+    }
+
+    @Test
+    void acksStillPendingAtTheDeadlineAreUnavailableWhileTheOthersSucceed() {
         EventEnvelope acknowledged = event();
         EventEnvelope hanging = event();
         when(template.send(recordOf(acknowledged))).thenReturn(acked());
@@ -164,8 +215,9 @@ class KafkaTransportTest {
         List<DeliveryResult> results = transport.deliverAll(List.of(hanging, acknowledged));
         long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
-        assertThat(results.get(0)).isInstanceOfSatisfying(DeliveryResult.Failed.class,
-                f -> assertThat(f.error()).hasCauseInstanceOf(TimeoutException.class));
+        assertThat(results.get(0)).as("our own deadline also means the broker is unavailable")
+                .isInstanceOfSatisfying(DeliveryResult.Unavailable.class,
+                        u -> assertThat(u.error()).hasCauseInstanceOf(TimeoutException.class));
         assertThat(results.get(1)).isInstanceOf(DeliveryResult.Delivered.class);
         assertThat(elapsedMs).as("one overall deadline (200 ms), not one per record").isLessThan(1_000);
     }

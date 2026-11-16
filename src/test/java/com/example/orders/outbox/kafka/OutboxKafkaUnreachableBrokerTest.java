@@ -26,11 +26,12 @@ import com.example.orders.outbox.OutboxRepository;
 
 /**
  * The "kafka" profile pointed at a port where nothing listens: every send blocks for {@code max.block.ms}
- * fetching metadata, then fails. A relay pass must cost one such block, not one per event, and the
- * skipped events must not lose an attempt.
+ * fetching metadata, then fails. A relay pass must cost one such block, not one per event, no event may
+ * lose an attempt to the outage, and the relay must then pause.
  */
 @SpringBootTest(properties = {
         "spring.kafka.producer.properties.max.block.ms=500",
+        "orders.outbox.initial-backoff=1m",
         "spring.kafka.admin.auto-create=false",
         "spring.kafka.listener.auto-startup=false"})
 @ActiveProfiles("kafka")
@@ -85,18 +86,21 @@ class OutboxKafkaUnreachableBrokerTest {
     }
 
     @Test
-    void anUnreachableBrokerCostsOneBlockPerPassAndSpendsOneAttempt() {
+    void anUnreachableBrokerCostsOneBlockPerPassSpendsNoAttemptsAndPausesTheRelay() {
         insertEvents();
 
         long start = System.nanoTime();
         int attempted = relay.relayDue();
         long elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
-        assertThat(attempted).isEqualTo(1);
-        // Same created_at, so the relay's tie-break (id) decides which one goes first.
-        assertThat(attempts()).containsExactlyInAnyOrder(1, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        assertThat(attempted).isZero();
+        assertThat(attempts()).containsOnly(0);
         assertThat(elapsedMs).as("about one max.block.ms, not %d of them", EVENTS)
                 .isGreaterThanOrEqualTo(MAX_BLOCK_MS - 50)
                 .isLessThan(MAX_BLOCK_MS * 4);
+
+        long pausedStart = System.nanoTime();
+        assertThat(relay.relayDue()).isZero();
+        assertThat((System.nanoTime() - pausedStart) / 1_000_000).as("paused: no send, no block").isLessThan(100);
     }
 }

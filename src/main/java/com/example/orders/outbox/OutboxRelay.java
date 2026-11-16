@@ -2,6 +2,7 @@ package com.example.orders.outbox;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -17,6 +18,11 @@ import org.springframework.stereotype.Component;
  *
  * <p>What "delivered" means depends on the transport: in-process, the handler finished; with Kafka, the
  * broker acknowledged the record (the listener then runs the handler with its own retries).
+ *
+ * <p>When the transport reports itself {@linkplain DeliveryResult.Unavailable unavailable}, the relay
+ * pauses (initial-backoff, doubling up to max-backoff) instead of spending the events' attempts. The pause
+ * lives in memory: an outage is a fact about this process's connection, and a restart probes afresh.
+ * Single-threaded, like the scheduler that calls it.
  */
 @Component
 public class OutboxRelay {
@@ -27,6 +33,9 @@ public class OutboxRelay {
     private final OutboxTransport transport;
     private final OutboxProperties properties;
     private final Clock clock;
+
+    private Instant pausedUntil = Instant.MIN;
+    private int consecutiveOutages;
 
     public OutboxRelay(OutboxRepository outboxRepository, OutboxTransport transport, OutboxProperties properties,
             Clock clock) {
@@ -39,12 +48,17 @@ public class OutboxRelay {
     /**
      * Delivers one batch of due events (oldest first, at most one per message key) and records each
      * outcome in a single transaction. A failure is recorded on its own event and does not affect the
-     * others.
+     * others. Does nothing while paused after the transport was unavailable.
      *
-     * @return how many events were attempted (delivered or failed; not counting ones the transport skipped)
+     * @return how many events were attempted (delivered or failed; not counting ones the transport skipped
+     *         or couldn't take because it was unavailable)
      */
     public int relayDue() {
-        List<OutboxEvent> due = outboxRepository.findDue(OutboxStatus.PENDING, clock.instant(),
+        Instant now = clock.instant();
+        if (now.isBefore(pausedUntil)) {
+            return 0;
+        }
+        List<OutboxEvent> due = outboxRepository.findDue(OutboxStatus.PENDING, now,
                 Limit.of(properties.batchSize()));
         if (due.isEmpty()) {
             return 0;
@@ -57,6 +71,7 @@ public class OutboxRelay {
 
         List<OutboxEvent> changed = new ArrayList<>();
         List<OutboxEvent> died = new ArrayList<>();
+        RuntimeException outage = null;
         int attempted = 0;
         for (int i = 0; i < due.size(); i++) {
             OutboxEvent event = due.get(i);
@@ -73,14 +88,39 @@ public class OutboxRelay {
                     changed.add(event);
                     attempted++;
                 }
+                case DeliveryResult.Unavailable unavailable -> {
+                    // not this event's fault: left exactly as it was, and the relay pauses below
+                    if (outage == null) {
+                        outage = unavailable.error();
+                    }
+                }
                 case DeliveryResult.NotAttempted notAttempted -> {
                     // left exactly as it was: no attempt counted, still due
                 }
             }
         }
-        outboxRepository.saveAll(changed);
+        if (!changed.isEmpty()) {
+            outboxRepository.saveAll(changed);
+        }
         died.forEach(this::notifyDead);
+        trackOutage(outage);
         return attempted;
+    }
+
+    /** Pauses after a pass in which the transport was unavailable; resets after one in which it wasn't. */
+    private void trackOutage(RuntimeException outage) {
+        if (outage == null) {
+            if (consecutiveOutages > 0) {
+                log.info("Outbox transport available again after {} unavailable pass(es)", consecutiveOutages);
+                consecutiveOutages = 0;
+            }
+            return;
+        }
+        consecutiveOutages++;
+        Duration pause = properties.backoffAfter(consecutiveOutages);
+        pausedUntil = clock.instant().plus(pause);
+        log.warn("Outbox transport unavailable ({} pass(es) in a row); pausing the relay for {}, no attempts "
+                + "counted: {}", consecutiveOutages, pause, outage.toString());
     }
 
     /** @return whether the event is now DEAD and its transport must be told (after saving) */

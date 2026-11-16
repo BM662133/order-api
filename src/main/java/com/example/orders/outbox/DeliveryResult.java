@@ -12,7 +12,15 @@ public sealed interface DeliveryResult {
     }
 
     /**
-     * Never tried, because the transport stopped the batch early (e.g. the broker is unreachable). The
+     * The transport itself is unavailable (e.g. the broker is down), which says nothing about this event.
+     * The relay leaves the event exactly as it was, with no attempt counted, and pauses itself before
+     * trying again, so an outage of any length never makes an event DEAD.
+     */
+    record Unavailable(RuntimeException error) implements DeliveryResult {
+    }
+
+    /**
+     * Never tried, because the transport stopped the batch early after an {@link Unavailable} result. The
      * relay leaves the event exactly as it was: no attempt is counted.
      */
     record NotAttempted() implements DeliveryResult {
@@ -24,6 +32,10 @@ public sealed interface DeliveryResult {
 
     static DeliveryResult failed(RuntimeException error) {
         return new Failed(error);
+    }
+
+    static DeliveryResult unavailable(RuntimeException error) {
+        return new Unavailable(error);
     }
 
     static DeliveryResult notAttempted() {

@@ -189,7 +189,7 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-s
 | MSISDN ending `0001` | 5 consumer attempts over about 16 s, then `FAILED` `PROVISIONING_UNAVAILABLE` and a record on `orders.events.DLT` (same partition number, cause header `GatewayUnavailableException`) |
 | Broker stopped, then started again | The API still accepts orders; they wait in `CREATED` and reach `ACTIVE` once Kafka is back |
 
-The relay publishes a whole batch (up to `orders.outbox.batch-size`) before waiting for acks, so during an outage a relay pass waits at most about 10 s (`delivery.timeout.ms` in `application-kafka.properties`), however many events it holds. If the broker can't be reached at all, the pass stops after the first failed send, and the other events don't use an attempt. Events with the same key are always delivered in order, even across retries.
+The relay publishes a whole batch (up to `orders.outbox.batch-size`) before waiting for acks, so during an outage a relay pass waits at most about 10 s (`delivery.timeout.ms` in `application-kafka.properties`), however many events it holds. If the broker can't be reached at all, the pass stops after the first failed send. An outage doesn't use up delivery attempts: the relay pauses (1 s, doubling up to 60 s) and tries again, so however long Kafka is down, events wait and are published once it's back. Events with the same key are always delivered in order, even across retries.
 
 The automated tests use an embedded broker instead (`OutboxKafkaIntegrationTest`).
 

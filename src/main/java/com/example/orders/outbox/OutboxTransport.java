@@ -20,8 +20,10 @@ public interface OutboxTransport {
      * throws for a single event's failure. The relay guarantees the batch holds at most one event per
      * message key, so a transport may deliver them concurrently without breaking per-key order.
      *
-     * <p>The default delivers one at a time with {@link #deliver}; a transport that can do better (Kafka:
-     * send everything, then wait for all acks) overrides it.
+     * <p>The default delivers one at a time with {@link #deliver} and reports every exception as
+     * {@link DeliveryResult.Failed}, so each one counts an attempt. A transport that can do better (Kafka:
+     * send everything, then wait for all acks) overrides it, and only a transport that can tell its own
+     * outage apart from a bad event should report {@link DeliveryResult.Unavailable}.
      */
     default List<DeliveryResult> deliverAll(List<EventEnvelope> events) {
         List<DeliveryResult> results = new ArrayList<>(events.size());

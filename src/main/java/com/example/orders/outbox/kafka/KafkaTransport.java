@@ -11,6 +11,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import org.apache.kafka.common.errors.RetriableException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -45,8 +46,11 @@ public class KafkaTransport implements OutboxTransport {
 
     @Override
     public void deliver(EventEnvelope event) {
-        if (deliverAll(List.of(event)).get(0) instanceof DeliveryResult.Failed failed) {
-            throw failed.error();
+        switch (deliverAll(List.of(event)).get(0)) {
+            case DeliveryResult.Failed failed -> throw failed.error();
+            case DeliveryResult.Unavailable unavailable -> throw unavailable.error();
+            default -> {
+            }
         }
     }
 
@@ -55,9 +59,15 @@ public class KafkaTransport implements OutboxTransport {
      * against one overall deadline ({@code send-timeout}). A batch costs one timeout at worst, however
      * many events it holds.
      *
-     * <p>If a send fails immediately (typically: the broker is unreachable and fetching topic metadata
-     * timed out after {@code max.block.ms}), the rest of the batch would fail the same way, one block
-     * each. So the batch stops there and the remaining events are returned as not attempted.
+     * <p>A failure that means the broker didn't take the record in time is reported as
+     * {@link DeliveryResult.Unavailable} (see {@link #brokerUnavailable}), so the relay pauses instead of
+     * spending attempts. Anything else, such as a record that is too large, is {@link DeliveryResult.Failed}
+     * and counts an attempt for that event only.
+     *
+     * <p>If a send is unavailable immediately (typically: fetching topic metadata timed out after
+     * {@code max.block.ms}), the rest of the batch would block the same way, one {@code max.block.ms} each.
+     * So the batch stops there and the remaining events are returned as not attempted. An immediate
+     * {@code Failed} doesn't stop the batch: one bad record says nothing about the others.
      *
      * <p>Concurrent sends can't reorder events with the same key: the relay never puts two of them in one
      * batch.
@@ -74,18 +84,23 @@ public class KafkaTransport implements OutboxTransport {
             } catch (RuntimeException ex) {
                 future = CompletableFuture.failedFuture(ex);
             }
-            if (future.isCompletedExceptionally()) {
-                results[i] = DeliveryResult.failed(publishFailure(event, causeOf(future)));
-                Arrays.fill(results, i + 1, results.length, DeliveryResult.notAttempted());
-                log.warn("Publishing outbox event {} failed immediately; skipping the other {} event(s) in this batch",
-                        event.eventId(), results.length - i - 1);
-                break;
-            }
             futures.add(future);
+            if (future.isCompletedExceptionally()) {
+                results[i] = failure(event, causeOf(future));
+                if (results[i] instanceof DeliveryResult.Unavailable) {
+                    Arrays.fill(results, i + 1, results.length, DeliveryResult.notAttempted());
+                    log.warn("Kafka unavailable publishing outbox event {}; skipping the other {} event(s) in "
+                            + "this batch", event.eventId(), results.length - i - 1);
+                    break;
+                }
+            }
         }
 
         long deadline = System.nanoTime() + sendTimeout.toNanos();
         for (int i = 0; i < futures.size(); i++) {
+            if (results[i] != null) {
+                continue;
+            }
             EventEnvelope event = events.get(i);
             try {
                 futures.get(i).get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
@@ -94,14 +109,16 @@ public class KafkaTransport implements OutboxTransport {
                 Thread.currentThread().interrupt();
                 // Outcome unknown: report failed so the relay retries (at-least-once; handlers are idempotent).
                 for (int j = i; j < futures.size(); j++) {
-                    results[j] = DeliveryResult.failed(
-                            new OutboxPublishException("Interrupted publishing event " + events.get(j).eventId(), ex));
+                    if (results[j] == null) {
+                        results[j] = DeliveryResult.failed(new OutboxPublishException(
+                                "Interrupted publishing event " + events.get(j).eventId(), ex));
+                    }
                 }
                 break;
             } catch (ExecutionException ex) {
-                results[i] = DeliveryResult.failed(publishFailure(event, ex.getCause()));
+                results[i] = failure(event, ex.getCause());
             } catch (TimeoutException ex) {
-                results[i] = DeliveryResult.failed(publishFailure(event, ex));
+                results[i] = failure(event, ex);
             }
         }
         return List.of(results);
@@ -118,8 +135,25 @@ public class KafkaTransport implements OutboxTransport {
                 event.eventId(), event.eventType(), event.aggregateId());
     }
 
-    private static OutboxPublishException publishFailure(EventEnvelope event, Throwable cause) {
-        return new OutboxPublishException("Could not publish event " + event.eventId(), cause);
+    private static DeliveryResult failure(EventEnvelope event, Throwable cause) {
+        OutboxPublishException error = new OutboxPublishException("Could not publish event " + event.eventId(),
+                cause);
+        return brokerUnavailable(cause) ? DeliveryResult.unavailable(error) : DeliveryResult.failed(error);
+    }
+
+    /**
+     * Whether the failure means the broker didn't take the record in time, rather than anything about the
+     * record: a Kafka {@link RetriableException} (metadata or delivery timeout, network and leader errors,
+     * all already retried by the producer up to {@code delivery.timeout.ms}), or our own
+     * {@code send-timeout} running out.
+     */
+    static boolean brokerUnavailable(Throwable failure) {
+        for (Throwable t = failure; t != null; t = t.getCause() == t ? null : t.getCause()) {
+            if (t instanceof RetriableException || t instanceof TimeoutException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static Throwable causeOf(CompletableFuture<?> failed) {
