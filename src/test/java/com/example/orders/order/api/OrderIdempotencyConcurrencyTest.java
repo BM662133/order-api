@@ -18,6 +18,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import com.example.orders.order.app.IdempotencyKey;
 import com.example.orders.support.Concurrently;
+import com.example.orders.support.StatusHistory;
 import com.example.orders.tenant.PartnerAuthenticationInterceptor;
 import com.jayway.jsonpath.JsonPath;
 
@@ -57,6 +58,7 @@ class OrderIdempotencyConcurrencyTest {
     @Test
     void identicalConcurrentRequestsCreateExactlyOneOrder() throws Exception {
         String key = UUID.randomUUID().toString();
+        int historyBefore = StatusHistory.count(jdbc);
 
         List<ResponseEntity<String>> responses = race(key, i -> """
                 {"msisdn": "+447700900123", "planCode": "BASIC_5G", "simType": "ESIM"}""");
@@ -68,6 +70,8 @@ class OrderIdempotencyConcurrencyTest {
                 .as("exactly one response is the original, the rest are replays")
                 .hasSize(1);
         assertThat(rowsFor(key)).isEqualTo(1);
+        assertThat(StatusHistory.count(jdbc)).as("losing inserts roll back before recording history")
+                .isEqualTo(historyBefore + 1);
     }
 
     @Test

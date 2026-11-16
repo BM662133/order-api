@@ -1,6 +1,7 @@
 package com.example.orders.order.app;
 
 import java.time.Clock;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -13,6 +14,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.example.orders.order.domain.Order;
 import com.example.orders.order.domain.SimType;
+import com.example.orders.order.history.OrderStatusHistoryEntry;
+import com.example.orders.order.history.OrderStatusHistoryRepository;
 import com.example.orders.order.persistence.OrderRepository;
 import com.example.orders.tenant.PartnerContext;
 
@@ -24,11 +27,14 @@ public class OrderService {
     static final int MAX_CANCEL_ATTEMPTS = 3;
 
     private final OrderRepository orderRepository;
+    private final OrderStatusHistoryRepository historyRepository;
     private final OrderWriter orderWriter;
     private final Clock clock;
 
-    public OrderService(OrderRepository orderRepository, OrderWriter orderWriter, Clock clock) {
+    public OrderService(OrderRepository orderRepository, OrderStatusHistoryRepository historyRepository,
+            OrderWriter orderWriter, Clock clock) {
         this.orderRepository = orderRepository;
+        this.historyRepository = historyRepository;
         this.orderWriter = orderWriter;
         this.clock = clock;
     }
@@ -96,6 +102,17 @@ public class OrderService {
     public Order get(PartnerContext partner, UUID orderId) {
         return orderRepository.findByIdAndPartnerId(orderId, partner.partnerId())
                 .orElseThrow(() -> new OrderNotFoundException(orderId));
+    }
+
+    /**
+     * The order's status timeline, oldest first.
+     *
+     * @throws OrderNotFoundException if the order does not exist or belongs to another partner
+     */
+    @Transactional(readOnly = true)
+    public List<OrderStatusHistoryEntry> history(PartnerContext partner, UUID orderId) {
+        get(partner, orderId);
+        return historyRepository.findByOrderIdAndPartnerIdOrderByIdAsc(orderId, partner.partnerId());
     }
 
     private Optional<CreateResult> findReplay(PartnerContext partner, IdempotencyKey key, String fingerprint) {

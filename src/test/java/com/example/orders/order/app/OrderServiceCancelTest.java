@@ -21,6 +21,7 @@ import com.example.orders.order.domain.IllegalTransitionException;
 import com.example.orders.order.domain.Order;
 import com.example.orders.order.domain.OrderStatus;
 import com.example.orders.order.domain.SimType;
+import com.example.orders.order.history.OrderStatusHistoryRepository;
 import com.example.orders.order.persistence.OrderRepository;
 import com.example.orders.tenant.PartnerContext;
 
@@ -31,7 +32,7 @@ class OrderServiceCancelTest {
     private static final UUID ORDER_ID = UUID.randomUUID();
 
     private final OrderWriter writer = mock(OrderWriter.class);
-    private final OrderService service = new OrderService(mock(OrderRepository.class), writer, CLOCK);
+    private final OrderService service = new OrderService(mock(OrderRepository.class), mock(OrderStatusHistoryRepository.class), writer, CLOCK);
 
     private static CancelResult cancelled() {
         Order order = Order.create("partner-a", "k", "0".repeat(64), "+447700900123", "BASIC_5G", SimType.ESIM, CLOCK);

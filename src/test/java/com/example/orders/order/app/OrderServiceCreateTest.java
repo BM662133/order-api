@@ -22,6 +22,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 
 import com.example.orders.order.domain.Order;
 import com.example.orders.order.domain.SimType;
+import com.example.orders.order.history.OrderStatusHistoryRepository;
 import com.example.orders.order.persistence.OrderRepository;
 import com.example.orders.tenant.PartnerContext;
 
@@ -35,7 +36,7 @@ class OrderServiceCreateTest {
 
     private final OrderRepository repository = mock(OrderRepository.class);
     private final OrderWriter writer = mock(OrderWriter.class);
-    private final OrderService service = new OrderService(repository, writer, CLOCK);
+    private final OrderService service = new OrderService(repository, mock(OrderStatusHistoryRepository.class), writer, CLOCK);
 
     private static Order existing(String fingerprint) {
         return Order.create("partner-a", KEY, fingerprint, "+447700900123", "BASIC_5G", SimType.ESIM, CLOCK);

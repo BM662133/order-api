@@ -72,4 +72,9 @@ public class OrderController {
     public OrderResponse get(PartnerContext partner, @PathVariable UUID orderId) {
         return OrderResponse.from(orderService.get(partner, orderId));
     }
+
+    @GetMapping("/orders/{orderId}/history")
+    public OrderHistoryResponse history(PartnerContext partner, @PathVariable UUID orderId) {
+        return OrderHistoryResponse.from(orderId, orderService.history(partner, orderId));
+    }
 }

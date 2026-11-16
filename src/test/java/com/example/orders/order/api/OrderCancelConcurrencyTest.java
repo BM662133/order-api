@@ -17,6 +17,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 import com.example.orders.order.app.IdempotencyKey;
 import com.example.orders.support.Concurrently;
+import com.example.orders.support.StatusHistory;
 import com.example.orders.tenant.PartnerAuthenticationInterceptor;
 import com.jayway.jsonpath.JsonPath;
 
@@ -57,5 +58,7 @@ class OrderCancelConcurrencyTest {
         });
         Long version = jdbc.queryForObject("SELECT version FROM orders WHERE id = ?", Long.class, UUID.fromString(id));
         assertThat(version).as("eight callers, one real write").isEqualTo(1);
+        assertThat(StatusHistory.timeline(jdbc, id)).as("conflicting attempts roll back their history rows")
+                .containsExactly("null->CREATED by CLIENT", "CREATED->CANCELLED by CLIENT");
     }
 }

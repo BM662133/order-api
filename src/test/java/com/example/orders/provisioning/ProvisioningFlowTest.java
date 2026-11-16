@@ -15,7 +15,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -33,6 +32,8 @@ import com.example.orders.order.app.IdempotencyKey;
 import com.example.orders.order.domain.OrderStatus;
 import com.example.orders.outbox.OutboxProperties;
 import com.example.orders.outbox.OutboxRelay;
+import com.example.orders.support.OutboxTestSupport;
+import com.example.orders.support.StatusHistory;
 import com.example.orders.tenant.PartnerAuthenticationInterceptor;
 import com.jayway.jsonpath.JsonPath;
 
@@ -46,8 +47,6 @@ import com.jayway.jsonpath.JsonPath;
 class ProvisioningFlowTest {
 
     private static final String PARTNER = PartnerAuthenticationInterceptor.PARTNER_HEADER;
-    /** Unique MSISDNs per test: other tests' orders all use +447700900123 and would trip MSISDN_IN_USE. */
-    private static final AtomicInteger MSISDN_SEQ = new AtomicInteger(ThreadLocalRandom.current().nextInt(500_000));
 
     @Autowired
     private MockMvc mockMvc;
@@ -64,17 +63,18 @@ class ProvisioningFlowTest {
     @MockitoSpyBean
     private FakeProvisioningGateway gateway;
 
-    /** The database is shared by every test context; settle events left behind by other test classes. */
     @BeforeEach
     void drainPendingEvents() {
-        while (relay.relayDue() > 0) {
-            // keep going until nothing is due (failing events die after max-attempts rounds)
-        }
+        OutboxTestSupport.drain(relay);
         clearInvocations(gateway);
     }
 
     private static String msisdnEndingIn(String lastFour) {
-        return String.format("+4475%06d%s", MSISDN_SEQ.incrementAndGet(), lastFour);
+        return OutboxTestSupport.uniqueMsisdn(lastFour);
+    }
+
+    private List<String> timeline(String id) {
+        return StatusHistory.timeline(jdbc, id);
     }
 
     private String createOrder(String partner, String msisdn, String planCode) throws Exception {
@@ -130,6 +130,11 @@ class ProvisioningFlowTest {
         mockMvc.perform(get("/orders/{id}", id).header(PARTNER, "partner-a"))
                 .andExpect(jsonPath("$.status").value("ACTIVE"))
                 .andExpect(jsonPath("$.failureReason").isEmpty());
+        assertThat(timeline(id)).containsExactly(
+                "null->CREATED by CLIENT",
+                "CREATED->VALIDATED by SYSTEM",
+                "VALIDATED->PROVISIONING by SYSTEM",
+                "PROVISIONING->ACTIVE by SYSTEM");
     }
 
     @Test
@@ -145,6 +150,7 @@ class ProvisioningFlowTest {
         verify(gateway, times(1)).activate(forOrder(id));
         assertThat(order(id)).containsEntry("status", "ACTIVE").containsEntry("version", version);
         assertThat(event(id)).containsEntry("status", "PROCESSED");
+        assertThat(timeline(id)).as("no new history for a no-op delivery").hasSize(4);
     }
 
     @Test
@@ -168,6 +174,7 @@ class ProvisioningFlowTest {
         relay.relayDue();
 
         assertThat(order(id)).containsEntry("status", "FAILED").containsEntry("failure_reason", "PLAN_INACTIVE");
+        assertThat(timeline(id)).containsExactly("null->CREATED by CLIENT", "CREATED->FAILED PLAN_INACTIVE by SYSTEM");
         verify(gateway, never()).activate(forOrder(id));
         mockMvc.perform(get("/orders/{id}", id).header(PARTNER, "partner-a"))
                 .andExpect(jsonPath("$.status").value("FAILED"))
@@ -207,6 +214,7 @@ class ProvisioningFlowTest {
 
         assertThat(order(id)).containsEntry("status", "FAILED").containsEntry("failure_reason", "GATEWAY_REJECTED");
         assertThat(event(id)).containsEntry("status", "PROCESSED");
+        assertThat(timeline(id)).last().isEqualTo("PROVISIONING->FAILED GATEWAY_REJECTED by SYSTEM");
     }
 
     @Test
@@ -239,6 +247,7 @@ class ProvisioningFlowTest {
         assertThat(order(id)).containsEntry("status", "CANCELLED");
         assertThat(event(id)).containsEntry("status", "PROCESSED");
         verify(gateway, never()).activate(forOrder(id));
+        assertThat(timeline(id)).containsExactly("null->CREATED by CLIENT", "CREATED->CANCELLED by CLIENT");
     }
 
     /** The cancel arrives while activate() is in flight, the race compensation exists for. */
@@ -259,6 +268,11 @@ class ProvisioningFlowTest {
         verify(gateway, times(1)).activate(forOrder(id));
         verify(gateway, times(1)).deactivate(forOrder(id));
         cancel(id).andExpect(status().isOk()).andExpect(jsonPath("$.status").value("CANCELLED"));
+        assertThat(timeline(id)).as("the cancel request is not a status change").containsExactly(
+                "null->CREATED by CLIENT",
+                "CREATED->VALIDATED by SYSTEM",
+                "VALIDATED->PROVISIONING by SYSTEM",
+                "PROVISIONING->CANCELLED by SYSTEM");
     }
 
     @Test

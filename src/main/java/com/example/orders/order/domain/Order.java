@@ -3,6 +3,8 @@ package com.example.orders.order.domain;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -12,12 +14,20 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import jakarta.persistence.Version;
+
+import org.springframework.data.domain.AfterDomainEventPublication;
+import org.springframework.data.domain.DomainEvents;
 
 /**
  * A partner's order for a SIM/plan. Status changes only through {@link #transitionTo} (directly or via
  * {@link #cancel}, {@link #fail}, {@link #completeCancellation}), which enforces the {@link OrderStatus}
  * state machine; there are no setters.
+ *
+ * <p>Every status change is also recorded as an {@link OrderStatusChanged}. Spring Data publishes these
+ * when the order goes through a repository {@code save*} method ({@link DomainEvents}), and the status
+ * history listener writes them in the same transaction. Any write path therefore gets history for free.
  */
 @Entity
 @Table(name = "orders")
@@ -71,6 +81,10 @@ public class Order {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    /** Status changes not yet published; see {@link #statusChanges()}. */
+    @Transient
+    private final List<OrderStatusChanged> statusChanges = new ArrayList<>();
+
     protected Order() {
     }
 
@@ -86,6 +100,7 @@ public class Order {
         this.status = OrderStatus.CREATED;
         this.createdAt = now;
         this.updatedAt = now;
+        recordChange(null, null, TriggeredBy.CLIENT);
     }
 
     /** @param msisdn E.164, with or without the leading '+' (format is validated at the API boundary) */
@@ -94,20 +109,19 @@ public class Order {
         return new Order(partnerId, idempotencyKey, requestFingerprint, msisdn, planCode, simType, now(clock));
     }
 
-    /** @throws IllegalTransitionException if the state machine does not allow {@code target} */
+    /**
+     * A system-driven status change (the provisioning worker).
+     *
+     * @throws IllegalTransitionException if the state machine does not allow {@code target}
+     */
     public void transitionTo(OrderStatus target, Clock clock) {
-        Objects.requireNonNull(target, "target");
-        if (!status.canTransitionTo(target)) {
-            throw new IllegalTransitionException(id, status, target);
-        }
-        this.status = target;
-        this.updatedAt = now(clock);
+        changeStatus(target, null, TriggeredBy.SYSTEM, clock);
     }
 
     /** @throws IllegalTransitionException if the order is already in a final status */
     public void fail(FailureReason reason, Clock clock) {
         Objects.requireNonNull(reason, "reason");
-        transitionTo(OrderStatus.FAILED, clock);
+        changeStatus(OrderStatus.FAILED, reason, TriggeredBy.SYSTEM, clock);
         this.failureReason = reason;
     }
 
@@ -130,7 +144,7 @@ public class Order {
                 yield CancelOutcome.CANCEL_REQUESTED;
             }
             case CREATED, VALIDATED, ACTIVE, FAILED -> {
-                transitionTo(OrderStatus.CANCELLED, clock);
+                changeStatus(OrderStatus.CANCELLED, null, TriggeredBy.CLIENT, clock);
                 yield CancelOutcome.CANCELLED;
             }
         };
@@ -150,6 +164,33 @@ public class Order {
 
     public boolean isCancelRequested() {
         return cancelRequestedAt != null;
+    }
+
+    /** Status changes since the last save. Spring Data publishes them on {@code save*}, then clears them. */
+    @DomainEvents
+    public List<OrderStatusChanged> statusChanges() {
+        return List.copyOf(statusChanges);
+    }
+
+    @AfterDomainEventPublication
+    void clearStatusChanges() {
+        statusChanges.clear();
+    }
+
+    /** The single place a status changes. */
+    private void changeStatus(OrderStatus target, FailureReason reason, TriggeredBy triggeredBy, Clock clock) {
+        Objects.requireNonNull(target, "target");
+        if (!status.canTransitionTo(target)) {
+            throw new IllegalTransitionException(id, status, target);
+        }
+        OrderStatus from = status;
+        this.status = target;
+        this.updatedAt = now(clock);
+        recordChange(from, reason, triggeredBy);
+    }
+
+    private void recordChange(OrderStatus from, FailureReason reason, TriggeredBy triggeredBy) {
+        statusChanges.add(new OrderStatusChanged(id, partnerId, from, status, reason, triggeredBy, updatedAt));
     }
 
     /** E.164 with or without '+' to the stored form (digits only). */

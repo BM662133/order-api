@@ -223,6 +223,89 @@ class OrderTest {
     }
 
     @Test
+    void creationRecordsTheFirstHistoryEntryAsClient() {
+        Order order = newOrder();
+
+        assertThat(order.statusChanges()).containsExactly(new OrderStatusChanged(
+                order.getId(), "partner-a", null, OrderStatus.CREATED, null, TriggeredBy.CLIENT, T0));
+    }
+
+    @Test
+    void eachTransitionRecordsFromToAndTimeAsSystem() {
+        Order order = newOrder();
+        Instant later = T0.plusSeconds(5);
+
+        order.transitionTo(OrderStatus.VALIDATED, Clock.fixed(later, ZoneOffset.UTC));
+
+        assertThat(order.statusChanges()).hasSize(2).last().isEqualTo(new OrderStatusChanged(
+                order.getId(), "partner-a", OrderStatus.CREATED, OrderStatus.VALIDATED, null, TriggeredBy.SYSTEM,
+                later));
+    }
+
+    @Test
+    void failRecordsItsReason() {
+        Order order = orderIn(OrderStatus.PROVISIONING);
+
+        order.fail(FailureReason.GATEWAY_REJECTED, CLOCK);
+
+        assertThat(order.statusChanges()).last().satisfies(change -> {
+            assertThat(change.from()).isEqualTo(OrderStatus.PROVISIONING);
+            assertThat(change.to()).isEqualTo(OrderStatus.FAILED);
+            assertThat(change.reason()).isEqualTo(FailureReason.GATEWAY_REJECTED);
+            assertThat(change.triggeredBy()).isEqualTo(TriggeredBy.SYSTEM);
+        });
+    }
+
+    @Test
+    void aClientCancelIsRecordedAsClientAndCompletingOneAsSystem() {
+        Order direct = orderIn(OrderStatus.VALIDATED);
+        direct.cancel(CLOCK);
+        Order compensated = orderIn(OrderStatus.PROVISIONING);
+        compensated.cancel(CLOCK);
+        compensated.completeCancellation(CLOCK);
+
+        assertThat(direct.statusChanges()).last().extracting(OrderStatusChanged::triggeredBy)
+                .isEqualTo(TriggeredBy.CLIENT);
+        assertThat(compensated.statusChanges()).last().satisfies(change -> {
+            assertThat(change.from()).isEqualTo(OrderStatus.PROVISIONING);
+            assertThat(change.to()).isEqualTo(OrderStatus.CANCELLED);
+            assertThat(change.triggeredBy()).isEqualTo(TriggeredBy.SYSTEM);
+        });
+    }
+
+    @Test
+    void changesThatAreNotStatusChangesRecordNothing() {
+        Order provisioning = orderIn(OrderStatus.PROVISIONING);
+        int before = provisioning.statusChanges().size();
+        provisioning.cancel(CLOCK);
+        provisioning.cancel(CLOCK);
+        Order cancelled = orderIn(OrderStatus.CANCELLED);
+        cancelled.cancel(CLOCK);
+
+        assertThat(provisioning.statusChanges()).as("a cancel request is not a status change").hasSize(before);
+        assertThat(cancelled.statusChanges()).as("a repeat cancel is a no-op").hasSize(2);
+    }
+
+    @Test
+    void anIllegalTransitionRecordsNothing() {
+        Order order = newOrder();
+
+        assertThatThrownBy(() -> order.transitionTo(OrderStatus.ACTIVE, CLOCK));
+
+        assertThat(order.statusChanges()).hasSize(1);
+    }
+
+    @Test
+    void publishedChangesAreClearedAndTheExposedListIsACopy() {
+        Order order = newOrder();
+        assertThat(order.statusChanges()).isUnmodifiable();
+
+        order.clearStatusChanges();
+
+        assertThat(order.statusChanges()).isEmpty();
+    }
+
+    @Test
     void transitionToNullIsRejected() {
         assertThatNullPointerException().isThrownBy(() -> newOrder().transitionTo(null, CLOCK));
     }
