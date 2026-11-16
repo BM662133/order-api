@@ -6,8 +6,10 @@ import java.util.UUID;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.example.orders.order.domain.CancelOutcome;
 import com.example.orders.order.domain.Order;
 import com.example.orders.order.persistence.OrderRepository;
+import com.example.orders.outbox.Outbox;
 
 /**
  * Single-purpose write transactions, in their own bean so that {@link OrderService} calls them through
@@ -18,16 +20,25 @@ import com.example.orders.order.persistence.OrderRepository;
 class OrderWriter {
 
     private final OrderRepository orderRepository;
+    private final Outbox outbox;
     private final Clock clock;
 
-    OrderWriter(OrderRepository orderRepository, Clock clock) {
+    OrderWriter(OrderRepository orderRepository, Outbox outbox, Clock clock) {
         this.orderRepository = orderRepository;
+        this.outbox = outbox;
         this.clock = clock;
     }
 
+    /**
+     * Inserts the order and its {@code OrderCreated} event atomically. The order is flushed first, so a
+     * duplicate idempotency key fails before the event is written.
+     */
     @Transactional
     public Order insert(Order order) {
-        return orderRepository.saveAndFlush(order);
+        Order saved = orderRepository.saveAndFlush(order);
+        outbox.append(saved.getId(), saved.getPartnerId(), OrderEvents.ORDER_CREATED,
+                new OrderEvents.OrderCreated(saved.getId(), saved.getPartnerId()));
+        return saved;
     }
 
     /**
@@ -36,12 +47,13 @@ class OrderWriter {
      * @throws OrderNotFoundException if the order does not exist or belongs to another partner
      */
     @Transactional
-    public Order cancel(String partnerId, UUID orderId) {
+    public CancelResult cancel(String partnerId, UUID orderId) {
         Order order = orderRepository.findByIdAndPartnerId(orderId, partnerId)
                 .orElseThrow(() -> new OrderNotFoundException(orderId));
-        if (order.cancel(clock)) {
+        CancelOutcome outcome = order.cancel(clock);
+        if (outcome.changed()) {
             orderRepository.saveAndFlush(order);
         }
-        return order;
+        return new CancelResult(order, outcome);
     }
 }

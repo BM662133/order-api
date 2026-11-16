@@ -15,8 +15,9 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
 /**
- * A partner's order for a SIM/plan. Status changes only through {@link #transitionTo}, which enforces
- * the {@link OrderStatus} state machine; there are no setters.
+ * A partner's order for a SIM/plan. Status changes only through {@link #transitionTo} (directly or via
+ * {@link #cancel}, {@link #fail}, {@link #completeCancellation}), which enforces the {@link OrderStatus}
+ * state machine; there are no setters.
  */
 @Entity
 @Table(name = "orders")
@@ -50,6 +51,15 @@ public class Order {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private OrderStatus status;
+
+    /** Set only when status is FAILED. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "failure_reason")
+    private FailureReason failureReason;
+
+    /** Set when a client cancels during PROVISIONING; the provisioning worker then compensates. */
+    @Column(name = "cancel_requested_at")
+    private Instant cancelRequestedAt;
 
     /** Null until first persisted, which also tells Spring Data the entity is new (no SELECT before INSERT). */
     @Version
@@ -94,25 +104,52 @@ public class Order {
         this.updatedAt = now(clock);
     }
 
+    /** @throws IllegalTransitionException if the order is already in a final status */
+    public void fail(FailureReason reason, Clock clock) {
+        Objects.requireNonNull(reason, "reason");
+        transitionTo(OrderStatus.FAILED, clock);
+        this.failureReason = reason;
+    }
+
     /**
-     * Client-requested cancellation. The state machine also allows PROVISIONING -> CANCELLED, but that
-     * edge belongs to the provisioning worker after it has undone the activation, so clients may not
-     * take it directly.
+     * Client-requested cancellation. During PROVISIONING the activation may already be under way, so the
+     * request is only recorded; the provisioning worker undoes the activation and then calls
+     * {@link #completeCancellation}.
      *
-     * @return {@code true} if the order was cancelled now, {@code false} if it was already CANCELLED
-     *         (cancel is idempotent)
-     * @throws CancellationNotAllowedException while PROVISIONING
      * @throws IllegalTransitionException from ACTIVE or FAILED
      */
-    public boolean cancel(Clock clock) {
+    public CancelOutcome cancel(Clock clock) {
         return switch (status) {
-            case CANCELLED -> false;
-            case PROVISIONING -> throw new CancellationNotAllowedException(id, status);
+            case CANCELLED -> CancelOutcome.ALREADY_CANCELLED;
+            case PROVISIONING -> {
+                if (cancelRequestedAt != null) {
+                    yield CancelOutcome.ALREADY_REQUESTED;
+                }
+                this.cancelRequestedAt = now(clock);
+                this.updatedAt = cancelRequestedAt;
+                yield CancelOutcome.CANCEL_REQUESTED;
+            }
             case CREATED, VALIDATED, ACTIVE, FAILED -> {
                 transitionTo(OrderStatus.CANCELLED, clock);
-                yield true;
+                yield CancelOutcome.CANCELLED;
             }
         };
+    }
+
+    /**
+     * Provisioning worker only: PROVISIONING -> CANCELLED once the activation has been undone.
+     *
+     * @throws IllegalStateException if no cancellation was requested
+     */
+    public void completeCancellation(Clock clock) {
+        if (cancelRequestedAt == null) {
+            throw new IllegalStateException("No cancellation was requested for order " + id);
+        }
+        transitionTo(OrderStatus.CANCELLED, clock);
+    }
+
+    public boolean isCancelRequested() {
+        return cancelRequestedAt != null;
     }
 
     /** E.164 with or without '+' to the stored form (digits only). */
@@ -155,6 +192,14 @@ public class Order {
 
     public OrderStatus getStatus() {
         return status;
+    }
+
+    public FailureReason getFailureReason() {
+        return failureReason;
+    }
+
+    public Instant getCancelRequestedAt() {
+        return cancelRequestedAt;
     }
 
     public Instant getCreatedAt() {

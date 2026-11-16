@@ -68,16 +68,16 @@ public class OrderService {
     }
 
     /**
-     * Cancels the partner's order; cancelling an already-cancelled order is a no-op. A concurrent update
-     * is retried in a fresh transaction that re-reads the order, so the decision is always made on its
-     * latest state.
+     * Cancels the partner's order, or during PROVISIONING records the request for the provisioning
+     * worker; repeats are no-ops (see {@link com.example.orders.order.domain.CancelOutcome}). A
+     * concurrent update is retried in a fresh transaction that re-reads the order, so the decision is
+     * always made on its latest state.
      *
      * @throws OrderNotFoundException if the order does not exist or belongs to another partner
-     * @throws com.example.orders.order.domain.CancellationNotAllowedException while PROVISIONING
      * @throws com.example.orders.order.domain.IllegalTransitionException from ACTIVE or FAILED
      * @throws OrderConcurrentlyModifiedException if every attempt hit a concurrent update
      */
-    public Order cancel(PartnerContext partner, UUID orderId) {
+    public CancelResult cancel(PartnerContext partner, UUID orderId) {
         for (int attempt = 1; ; attempt++) {
             try {
                 return orderWriter.cancel(partner.partnerId(), orderId);

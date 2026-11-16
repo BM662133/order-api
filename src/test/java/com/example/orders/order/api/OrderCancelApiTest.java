@@ -27,7 +27,10 @@ import com.example.orders.order.domain.OrderStatus;
 import com.example.orders.tenant.PartnerAuthenticationInterceptor;
 import com.jayway.jsonpath.JsonPath;
 
-/** Statuses that the API cannot reach yet (until the slice 5 worker) are set directly with SQL. */
+/**
+ * Statuses are set directly with SQL, so each case is deterministic. The provisioning worker doesn't
+ * interfere: tests run with outbox scheduling off (src/test/resources/config/application.properties).
+ */
 @SpringBootTest
 @AutoConfigureMockMvc
 class OrderCancelApiTest {
@@ -78,7 +81,8 @@ class OrderCancelApiTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(id))
-                .andExpect(jsonPath("$.status").value("CANCELLED"));
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.cancelRequestedAt").isEmpty());
 
         assertThat(statusOf(id)).isEqualTo("CANCELLED");
         assertThat(versionOf(id)).isEqualTo(1);
@@ -99,20 +103,33 @@ class OrderCancelApiTest {
     }
 
     @Test
-    void cancelWhileProvisioningIs409CancellationNotAllowed() throws Exception {
+    void cancelWhileProvisioningIs202AndOnlyRecordsTheRequest() throws Exception {
         String id = createOrder("partner-a");
         setStatus(id, OrderStatus.PROVISIONING);
 
         cancel("partner-a", id)
-                .andExpect(status().isConflict())
-                .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
-                .andExpect(jsonPath("$.type").value(ProblemTypes.CANCELLATION_NOT_ALLOWED.toString()))
-                .andExpect(jsonPath("$.title").value("Cancellation not allowed"))
-                .andExpect(jsonPath("$.detail").value("Order cannot be cancelled while PROVISIONING."))
-                .andExpect(jsonPath("$.orderId").value(id))
-                .andExpect(jsonPath("$.currentStatus").value("PROVISIONING"));
+                .andExpect(status().isAccepted())
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.id").value(id))
+                .andExpect(jsonPath("$.status").value("PROVISIONING"))
+                .andExpect(jsonPath("$.cancelRequestedAt").isNotEmpty());
 
         assertThat(statusOf(id)).isEqualTo("PROVISIONING");
+        assertThat(versionOf(id)).isEqualTo(1);
+    }
+
+    @Test
+    void repeatCancelWhileProvisioningIs202WithoutAWrite() throws Exception {
+        String id = createOrder("partner-a");
+        setStatus(id, OrderStatus.PROVISIONING);
+        String first = cancel("partner-a", id).andExpect(status().isAccepted())
+                .andReturn().getResponse().getContentAsString();
+
+        cancel("partner-a", id)
+                .andExpect(status().isAccepted())
+                .andExpect(content().json(first, true));
+
+        assertThat(versionOf(id)).as("the repeat must not write").isEqualTo(1);
     }
 
     @ParameterizedTest

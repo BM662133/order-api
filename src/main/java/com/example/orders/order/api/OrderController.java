@@ -5,6 +5,7 @@ import java.util.UUID;
 
 import jakarta.validation.Valid;
 
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
+import com.example.orders.order.app.CancelResult;
 import com.example.orders.order.app.CreateResult;
 import com.example.orders.order.app.IdempotencyKey;
 import com.example.orders.order.app.OrderService;
@@ -55,10 +57,15 @@ public class OrderController {
         return response.body(OrderResponse.from(order));
     }
 
-    /** Idempotent: cancelling an already-cancelled order returns it unchanged with 200. */
+    /**
+     * 200 once the order is cancelled (repeats included). 202 while PROVISIONING: the cancellation is
+     * recorded and the provisioning worker completes it after undoing the activation.
+     */
     @PostMapping("/orders/{orderId}/cancel")
-    public OrderResponse cancel(PartnerContext partner, @PathVariable UUID orderId) {
-        return OrderResponse.from(orderService.cancel(partner, orderId));
+    public ResponseEntity<OrderResponse> cancel(PartnerContext partner, @PathVariable UUID orderId) {
+        CancelResult result = orderService.cancel(partner, orderId);
+        HttpStatus status = result.outcome().pending() ? HttpStatus.ACCEPTED : HttpStatus.OK;
+        return ResponseEntity.status(status).body(OrderResponse.from(result.order()));
     }
 
     @GetMapping("/orders/{orderId}")

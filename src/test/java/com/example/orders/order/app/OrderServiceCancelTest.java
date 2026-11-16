@@ -16,7 +16,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
-import com.example.orders.order.domain.CancellationNotAllowedException;
+import com.example.orders.order.domain.CancelOutcome;
+import com.example.orders.order.domain.IllegalTransitionException;
 import com.example.orders.order.domain.Order;
 import com.example.orders.order.domain.OrderStatus;
 import com.example.orders.order.domain.SimType;
@@ -32,10 +33,9 @@ class OrderServiceCancelTest {
     private final OrderWriter writer = mock(OrderWriter.class);
     private final OrderService service = new OrderService(mock(OrderRepository.class), writer, CLOCK);
 
-    private static Order cancelledOrder() {
+    private static CancelResult cancelled() {
         Order order = Order.create("partner-a", "k", "0".repeat(64), "+447700900123", "BASIC_5G", SimType.ESIM, CLOCK);
-        order.cancel(CLOCK);
-        return order;
+        return new CancelResult(order, order.cancel(CLOCK));
     }
 
     private static ObjectOptimisticLockingFailureException optimisticConflict() {
@@ -44,30 +44,33 @@ class OrderServiceCancelTest {
 
     @Test
     void successOnFirstAttemptIsReturned() {
-        Order order = cancelledOrder();
-        when(writer.cancel("partner-a", ORDER_ID)).thenReturn(order);
+        CancelResult result = cancelled();
+        when(writer.cancel("partner-a", ORDER_ID)).thenReturn(result);
 
-        assertThat(service.cancel(PARTNER, ORDER_ID)).isSameAs(order);
+        assertThat(service.cancel(PARTNER, ORDER_ID)).isSameAs(result);
         verify(writer, times(1)).cancel("partner-a", ORDER_ID);
     }
 
     @Test
     void optimisticConflictIsRetriedInAFreshAttempt() {
-        Order order = cancelledOrder();
-        when(writer.cancel("partner-a", ORDER_ID)).thenThrow(optimisticConflict()).thenReturn(order);
+        CancelResult result = cancelled();
+        when(writer.cancel("partner-a", ORDER_ID)).thenThrow(optimisticConflict()).thenReturn(result);
 
-        assertThat(service.cancel(PARTNER, ORDER_ID).getStatus()).isEqualTo(OrderStatus.CANCELLED);
+        CancelResult actual = service.cancel(PARTNER, ORDER_ID);
+
+        assertThat(actual.outcome()).isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(actual.order().getStatus()).isEqualTo(OrderStatus.CANCELLED);
         verify(writer, times(2)).cancel("partner-a", ORDER_ID);
     }
 
     @Test
     void lockAcquisitionFailureIsRetriedToo() {
-        Order order = cancelledOrder();
+        CancelResult result = cancelled();
         when(writer.cancel("partner-a", ORDER_ID))
                 .thenThrow(new CannotAcquireLockException("row locked"))
-                .thenReturn(order);
+                .thenReturn(result);
 
-        assertThat(service.cancel(PARTNER, ORDER_ID)).isSameAs(order);
+        assertThat(service.cancel(PARTNER, ORDER_ID)).isSameAs(result);
     }
 
     @Test
@@ -94,10 +97,10 @@ class OrderServiceCancelTest {
     @Test
     void businessRuleViolationIsNotRetried() {
         when(writer.cancel("partner-a", ORDER_ID))
-                .thenThrow(new CancellationNotAllowedException(ORDER_ID, OrderStatus.PROVISIONING));
+                .thenThrow(new IllegalTransitionException(ORDER_ID, OrderStatus.ACTIVE, OrderStatus.CANCELLED));
 
         assertThatThrownBy(() -> service.cancel(PARTNER, ORDER_ID))
-                .isInstanceOf(CancellationNotAllowedException.class);
+                .isInstanceOf(IllegalTransitionException.class);
         verify(writer, times(1)).cancel("partner-a", ORDER_ID);
     }
 }

@@ -115,34 +115,97 @@ class OrderTest {
         Order order = orderIn(from);
         Instant later = T0.plusSeconds(5);
 
-        boolean changed = order.cancel(Clock.fixed(later, ZoneOffset.UTC));
+        CancelOutcome outcome = order.cancel(Clock.fixed(later, ZoneOffset.UTC));
 
-        assertThat(changed).isTrue();
+        assertThat(outcome).isEqualTo(CancelOutcome.CANCELLED);
+        assertThat(outcome.changed()).isTrue();
+        assertThat(outcome.pending()).isFalse();
         assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELLED);
         assertThat(order.getUpdatedAt()).isEqualTo(later);
+        assertThat(order.getCancelRequestedAt()).isNull();
     }
 
     @Test
     void cancelWhenAlreadyCancelledIsANoOp() {
         Order order = orderIn(OrderStatus.CANCELLED);
 
-        boolean changed = order.cancel(Clock.fixed(T0.plusSeconds(5), ZoneOffset.UTC));
+        CancelOutcome outcome = order.cancel(Clock.fixed(T0.plusSeconds(5), ZoneOffset.UTC));
 
-        assertThat(changed).isFalse();
+        assertThat(outcome).isEqualTo(CancelOutcome.ALREADY_CANCELLED);
+        assertThat(outcome.changed()).isFalse();
         assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELLED);
         assertThat(order.getUpdatedAt()).isEqualTo(T0);
     }
 
     @Test
-    void cancelWhileProvisioningIsNotAllowedEvenThoughTheStateMachineHasThatEdge() {
-        assertThat(OrderStatus.PROVISIONING.canTransitionTo(OrderStatus.CANCELLED)).isTrue();
+    void cancelWhileProvisioningOnlyRecordsTheRequest() {
+        Order order = orderIn(OrderStatus.PROVISIONING);
+        Instant later = T0.plusSeconds(5);
+
+        CancelOutcome outcome = order.cancel(Clock.fixed(later, ZoneOffset.UTC));
+
+        assertThat(outcome).isEqualTo(CancelOutcome.CANCEL_REQUESTED);
+        assertThat(outcome.changed()).isTrue();
+        assertThat(outcome.pending()).isTrue();
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.PROVISIONING);
+        assertThat(order.isCancelRequested()).isTrue();
+        assertThat(order.getCancelRequestedAt()).isEqualTo(later);
+        assertThat(order.getUpdatedAt()).isEqualTo(later);
+    }
+
+    @Test
+    void repeatCancelWhileProvisioningKeepsTheFirstRequest() {
+        Order order = orderIn(OrderStatus.PROVISIONING);
+        order.cancel(CLOCK);
+
+        CancelOutcome outcome = order.cancel(Clock.fixed(T0.plusSeconds(5), ZoneOffset.UTC));
+
+        assertThat(outcome).isEqualTo(CancelOutcome.ALREADY_REQUESTED);
+        assertThat(outcome.changed()).isFalse();
+        assertThat(outcome.pending()).isTrue();
+        assertThat(order.getCancelRequestedAt()).isEqualTo(T0);
+        assertThat(order.getUpdatedAt()).isEqualTo(T0);
+    }
+
+    @Test
+    void completeCancellationAfterARequestCancels() {
+        Order order = orderIn(OrderStatus.PROVISIONING);
+        order.cancel(CLOCK);
+
+        order.completeCancellation(Clock.fixed(T0.plusSeconds(5), ZoneOffset.UTC));
+
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(order.getUpdatedAt()).isEqualTo(T0.plusSeconds(5));
+    }
+
+    @Test
+    void completeCancellationWithoutARequestIsAProgrammingError() {
         Order order = orderIn(OrderStatus.PROVISIONING);
 
-        assertThatThrownBy(() -> order.cancel(CLOCK))
-                .isInstanceOfSatisfying(CancellationNotAllowedException.class, ex -> assertThat(ex.properties())
-                        .containsEntry("orderId", order.getId())
-                        .containsEntry("currentStatus", OrderStatus.PROVISIONING));
+        assertThatThrownBy(() -> order.completeCancellation(CLOCK)).isInstanceOf(IllegalStateException.class);
         assertThat(order.getStatus()).isEqualTo(OrderStatus.PROVISIONING);
+    }
+
+    @ParameterizedTest
+    @EnumSource(names = {"CREATED", "VALIDATED", "PROVISIONING"})
+    void failRecordsTheReason(OrderStatus from) {
+        Order order = orderIn(from);
+
+        order.fail(FailureReason.GATEWAY_REJECTED, Clock.fixed(T0.plusSeconds(5), ZoneOffset.UTC));
+
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.FAILED);
+        assertThat(order.getFailureReason()).isEqualTo(FailureReason.GATEWAY_REJECTED);
+        assertThat(order.getUpdatedAt()).isEqualTo(T0.plusSeconds(5));
+    }
+
+    @ParameterizedTest
+    @EnumSource(names = {"ACTIVE", "FAILED", "CANCELLED"})
+    void failFromAFinalStateIsAnIllegalTransitionAndKeepsNoReason(OrderStatus from) {
+        Order order = orderIn(from);
+
+        assertThatThrownBy(() -> order.fail(FailureReason.GATEWAY_REJECTED, CLOCK))
+                .isInstanceOf(IllegalTransitionException.class);
+        assertThat(order.getFailureReason()).isNull();
     }
 
     @ParameterizedTest

@@ -18,7 +18,6 @@ public final class ProblemTypes {
     public static final URI ORDER_NOT_FOUND = URI.create(BASE + "order-not-found");
     public static final URI INVALID_IDEMPOTENCY_KEY = URI.create(BASE + "invalid-idempotency-key");
     public static final URI IDEMPOTENCY_KEY_REUSED = URI.create(BASE + "idempotency-key-reused");
-    public static final URI CANCELLATION_NOT_ALLOWED = URI.create(BASE + "cancellation-not-allowed");
     public static final URI CONCURRENT_MODIFICATION = URI.create(BASE + "concurrent-modification");
 
     private ProblemTypes() {
