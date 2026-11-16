@@ -189,7 +189,7 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-s
 | MSISDN ending `0001` | 5 consumer attempts over about 16 s, then `FAILED` `PROVISIONING_UNAVAILABLE` and a record on `orders.events.DLT` (same partition number, cause header `GatewayUnavailableException`) |
 | Broker stopped, then started again | The API still accepts orders; they wait in `CREATED` and reach `ACTIVE` once Kafka is back |
 
-During an outage, each publish attempt blocks the single relay thread for up to about 10 s (`delivery.timeout.ms` in `application-kafka.properties`) before it is retried.
+The relay publishes a whole batch (up to `orders.outbox.batch-size`) before waiting for acks, so during an outage a relay pass waits at most about 10 s (`delivery.timeout.ms` in `application-kafka.properties`), however many events it holds. If the broker can't be reached at all, the pass stops after the first failed send, and the other events don't use an attempt. Events with the same key are always delivered in order, even across retries.
 
 The automated tests use an embedded broker instead (`OutboxKafkaIntegrationTest`).
 
@@ -219,7 +219,7 @@ src/main/java/com/example/orders/
                  → persistence; history/ (status audit trail)
   outbox/        transactional outbox, relay, in-process transport; kafka/ (Kafka transport)
   provisioning/  worker, sweeper, eligibility checks, fake gateway
-src/main/resources/db/migration/   Flyway migrations V1–V8
+src/main/resources/db/migration/   Flyway migrations V1–V9
 ```
 
 `CLAUDE.md` describes the architecture and conventions in more detail.

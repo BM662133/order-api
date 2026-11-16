@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -158,6 +159,20 @@ class OutboxKafkaIntegrationTest {
         awaitStatus(id, "ACTIVE");
         verify(gateway, times(1)).activate(forOrder(id));
         assertThat(StatusHistory.timeline(jdbc, id)).hasSize(4);
+    }
+
+    @Test
+    void aWholeBatchIsPublishedInOneRelayPass() throws Exception {
+        List<String> ids = new ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            ids.add(createOrder(OutboxTestSupport.uniqueMsisdn("1234")));
+        }
+
+        assertThat(relay.relayDue()).isEqualTo(50);
+
+        assertThat(ids).allSatisfy(id -> assertThat(outboxRow(id)).containsEntry("status", "PROCESSED"));
+        await().atMost(TIMEOUT).untilAsserted(() ->
+                assertThat(ids).allSatisfy(id -> assertThat(order(id)).containsEntry("status", "ACTIVE")));
     }
 
     @Test

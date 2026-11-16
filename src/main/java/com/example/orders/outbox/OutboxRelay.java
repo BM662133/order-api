@@ -2,6 +2,7 @@ package com.example.orders.outbox;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.slf4j.Logger;
@@ -11,7 +12,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * Delivers due outbox events through the {@link OutboxTransport}, at least once, retrying failures with
- * backoff. Deliberately not transactional: delivery may do network I/O (handlers, a broker).
+ * backoff. Deliberately not transactional while delivering: delivery may do network I/O (handlers, a
+ * broker).
  *
  * <p>What "delivered" means depends on the transport: in-process, the handler finished; with Kafka, the
  * broker acknowledged the record (the listener then runs the handler with its own retries).
@@ -35,52 +37,77 @@ public class OutboxRelay {
     }
 
     /**
-     * Delivers one batch of due events, oldest first and one at a time (so events with the same key keep
-     * their order). A failure is recorded on its event and does not stop the batch.
+     * Delivers one batch of due events (oldest first, at most one per message key) and records each
+     * outcome in a single transaction. A failure is recorded on its own event and does not affect the
+     * others.
      *
-     * @return how many events were attempted
+     * @return how many events were attempted (delivered or failed; not counting ones the transport skipped)
      */
     public int relayDue() {
-        List<OutboxEvent> due = outboxRepository.findByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
-                OutboxStatus.PENDING, clock.instant(), Limit.of(properties.batchSize()));
-        due.forEach(this::deliver);
-        return due.size();
+        List<OutboxEvent> due = outboxRepository.findDue(OutboxStatus.PENDING, clock.instant(),
+                Limit.of(properties.batchSize()));
+        if (due.isEmpty()) {
+            return 0;
+        }
+        List<DeliveryResult> results = transport.deliverAll(due.stream().map(OutboxEvent::toEnvelope).toList());
+        if (results.size() != due.size()) {
+            throw new IllegalStateException("Transport returned " + results.size() + " results for " + due.size()
+                    + " events");
+        }
+
+        List<OutboxEvent> changed = new ArrayList<>();
+        List<OutboxEvent> died = new ArrayList<>();
+        int attempted = 0;
+        for (int i = 0; i < due.size(); i++) {
+            OutboxEvent event = due.get(i);
+            switch (results.get(i)) {
+                case DeliveryResult.Delivered delivered -> {
+                    event.markProcessed(clock);
+                    changed.add(event);
+                    attempted++;
+                }
+                case DeliveryResult.Failed failed -> {
+                    if (recordFailure(event, failed.error())) {
+                        died.add(event);
+                    }
+                    changed.add(event);
+                    attempted++;
+                }
+                case DeliveryResult.NotAttempted notAttempted -> {
+                    // left exactly as it was: no attempt counted, still due
+                }
+            }
+        }
+        outboxRepository.saveAll(changed);
+        died.forEach(this::notifyDead);
+        return attempted;
     }
 
-    private void deliver(OutboxEvent event) {
-        EventEnvelope envelope = event.toEnvelope();
-        try {
-            transport.deliver(envelope);
-        } catch (UnknownEventTypeException ex) {
+    /** @return whether the event is now DEAD and its transport must be told (after saving) */
+    private boolean recordFailure(OutboxEvent event, RuntimeException ex) {
+        if (ex instanceof UnknownEventTypeException) {
             event.recordFailure(ex.getMessage(), Duration.ZERO, clock);
             event.markDead();
-            outboxRepository.save(event);
             log.error("Outbox event {} has unknown type {}; marked DEAD", event.getId(), event.getEventType());
-            return;
-        } catch (RuntimeException ex) {
-            recordFailure(event, envelope, ex);
-            return;
+            return false;
         }
-        event.markProcessed(clock);
-        outboxRepository.save(event);
-    }
-
-    private void recordFailure(OutboxEvent event, EventEnvelope envelope, RuntimeException ex) {
         event.recordFailure(ex.getClass().getSimpleName() + ": " + ex.getMessage(),
                 properties.backoffAfter(event.getAttempts() + 1), clock);
         if (event.getAttempts() < properties.maxAttempts()) {
-            outboxRepository.save(event);
             log.warn("Outbox event {} ({}) failed, attempt {}/{}; retrying at {}: {}", event.getId(),
                     event.getEventType(), event.getAttempts(), properties.maxAttempts(), event.getNextAttemptAt(),
                     ex.toString());
-            return;
+            return false;
         }
         event.markDead();
-        outboxRepository.save(event);
         log.error("Outbox event {} ({}) failed {} times; marked DEAD", event.getId(), event.getEventType(),
                 event.getAttempts(), ex);
+        return true;
+    }
+
+    private void notifyDead(OutboxEvent event) {
         try {
-            transport.onDead(envelope);
+            transport.onDead(event.toEnvelope());
         } catch (RuntimeException callbackFailure) {
             log.error("onDead failed for outbox event {}", event.getId(), callbackFailure);
         }

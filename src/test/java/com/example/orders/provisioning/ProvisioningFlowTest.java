@@ -187,7 +187,9 @@ class ProvisioningFlowTest {
         String first = createOrder(msisdn);
         String second = createOrder(msisdn);
 
-        relay.relayDue();
+        // Same key: the second event waits behind the first (head-of-line), so this takes two relay passes.
+        assertThat(relay.relayDue()).isEqualTo(1);
+        OutboxTestSupport.drain(relay);
 
         assertThat(List.of(order(first), order(second)))
                 .extracting(row -> row.get("status") + "/" + row.get("failure_reason"))
