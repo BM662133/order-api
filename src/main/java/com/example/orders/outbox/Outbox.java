@@ -29,11 +29,14 @@ public class Outbox {
      * it describes. {@code MANDATORY} turns a call outside a transaction into an error instead of a
      * silently separate commit.
      *
-     * @param payload serialized to JSON
+     * @param messageKey broker key: events with the same key are delivered in order (with Kafka, on one
+     *                   partition, so by one consumer at a time)
+     * @param payload    serialized to JSON
      */
     @Transactional(propagation = Propagation.MANDATORY)
-    public void append(UUID aggregateId, String partnerId, String eventType, Object payload) {
-        outboxRepository.save(OutboxEvent.pending(aggregateId, partnerId, eventType, toJson(payload), clock));
+    public void append(UUID aggregateId, String partnerId, String eventType, String messageKey, Object payload) {
+        outboxRepository.save(
+                OutboxEvent.pending(aggregateId, partnerId, eventType, messageKey, toJson(payload), clock));
     }
 
     private String toJson(Object payload) {

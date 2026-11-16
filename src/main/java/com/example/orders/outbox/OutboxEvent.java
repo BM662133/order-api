@@ -35,6 +35,10 @@ public class OutboxEvent {
     @Column(name = "event_type", nullable = false, updatable = false)
     private String eventType;
 
+    /** Broker key; events with the same key are delivered in order. */
+    @Column(name = "message_key", nullable = false, updatable = false)
+    private String messageKey;
+
     /** JSON; what a message broker would carry. */
     @Column(nullable = false, updatable = false)
     private String payload;
@@ -65,11 +69,13 @@ public class OutboxEvent {
     protected OutboxEvent() {
     }
 
-    private OutboxEvent(UUID aggregateId, String partnerId, String eventType, String payload, Instant now) {
+    private OutboxEvent(UUID aggregateId, String partnerId, String eventType, String messageKey, String payload,
+            Instant now) {
         this.id = UUID.randomUUID();
         this.aggregateId = Objects.requireNonNull(aggregateId, "aggregateId");
         this.partnerId = Objects.requireNonNull(partnerId, "partnerId");
         this.eventType = Objects.requireNonNull(eventType, "eventType");
+        this.messageKey = Objects.requireNonNull(messageKey, "messageKey");
         this.payload = Objects.requireNonNull(payload, "payload");
         this.status = OutboxStatus.PENDING;
         this.nextAttemptAt = now;
@@ -77,9 +83,13 @@ public class OutboxEvent {
     }
 
     /** A new event, due immediately. */
-    public static OutboxEvent pending(UUID aggregateId, String partnerId, String eventType, String payload,
-            Clock clock) {
-        return new OutboxEvent(aggregateId, partnerId, eventType, payload, now(clock));
+    public static OutboxEvent pending(UUID aggregateId, String partnerId, String eventType, String messageKey,
+            String payload, Clock clock) {
+        return new OutboxEvent(aggregateId, partnerId, eventType, messageKey, payload, now(clock));
+    }
+
+    public EventEnvelope toEnvelope() {
+        return new EventEnvelope(id, eventType, aggregateId, partnerId, messageKey, payload);
     }
 
     void markProcessed(Clock clock) {
@@ -116,6 +126,10 @@ public class OutboxEvent {
 
     public String getEventType() {
         return eventType;
+    }
+
+    public String getMessageKey() {
+        return messageKey;
     }
 
     public String getPayload() {

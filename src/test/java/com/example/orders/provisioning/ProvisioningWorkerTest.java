@@ -28,7 +28,7 @@ import com.example.orders.order.domain.FailureReason;
 import com.example.orders.order.domain.Order;
 import com.example.orders.order.domain.OrderStatus;
 import com.example.orders.order.domain.SimType;
-import com.example.orders.outbox.OutboxEvent;
+import com.example.orders.outbox.EventEnvelope;
 
 /** The worker's decisions per status, including the concurrent-change branch threads can't hit reliably. */
 class ProvisioningWorkerTest {
@@ -42,7 +42,8 @@ class ProvisioningWorkerTest {
     private final Order created = Order.create("partner-a", "k", "0".repeat(64), "+447700900123", "BASIC_5G",
             SimType.ESIM, CLOCK);
     private final UUID id = created.getId();
-    private final OutboxEvent event = OutboxEvent.pending(id, "partner-a", OrderEvents.ORDER_CREATED, "{}", CLOCK);
+    private final EventEnvelope event = new EventEnvelope(UUID.randomUUID(), OrderEvents.ORDER_CREATED, id,
+            "partner-a", "partner-a:447700900123", "{}");
 
     /** The same order (same id) moved along legal transitions to {@code target}. */
     private Order in(OrderStatus target) {

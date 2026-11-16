@@ -18,7 +18,7 @@ class OutboxAppendTest {
 
     @Test
     void appendingOutsideATransactionIsRejected() {
-        assertThatThrownBy(() -> outbox.append(UUID.randomUUID(), "partner-a", "TestEvent", Map.of()))
+        assertThatThrownBy(() -> outbox.append(UUID.randomUUID(), "partner-a", "TestEvent", "key-1", Map.of()))
                 .isInstanceOf(IllegalTransactionStateException.class);
     }
 }

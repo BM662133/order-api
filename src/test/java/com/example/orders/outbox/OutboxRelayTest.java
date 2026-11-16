@@ -26,23 +26,20 @@ class OutboxRelayTest {
 
     private static final Instant T0 = Instant.parse("2026-01-01T10:00:00Z");
     private static final Clock CLOCK = Clock.fixed(T0, ZoneOffset.UTC);
-    private static final String TYPE = "TestEvent";
     private static final int MAX_ATTEMPTS = 3;
 
     private final OutboxRepository repository = mock(OutboxRepository.class);
-    private final OutboxEventHandler handler = mock(OutboxEventHandler.class);
-    private OutboxRelay relay;
+    private final OutboxTransport transport = mock(OutboxTransport.class);
+    private final OutboxRelay relay = new OutboxRelay(repository, transport,
+            new OutboxProperties(50, MAX_ATTEMPTS, Duration.ofSeconds(1), Duration.ofSeconds(60)), CLOCK);
 
     @BeforeEach
     void setUp() {
-        when(handler.eventType()).thenReturn(TYPE);
         when(repository.save(any())).then(returnsFirstArg());
-        relay = new OutboxRelay(repository, List.of(handler),
-                new OutboxProperties(50, MAX_ATTEMPTS, Duration.ofSeconds(1), Duration.ofSeconds(60)), CLOCK);
     }
 
-    private static OutboxEvent event(String type) {
-        return OutboxEvent.pending(UUID.randomUUID(), "partner-a", type, "{}", CLOCK);
+    private static OutboxEvent event() {
+        return OutboxEvent.pending(UUID.randomUUID(), "partner-a", "TestEvent", "key-1", "{}", CLOCK);
     }
 
     private void due(OutboxEvent... events) {
@@ -52,12 +49,12 @@ class OutboxRelayTest {
 
     @Test
     void successfulDeliveryMarksTheEventProcessed() {
-        OutboxEvent event = event(TYPE);
+        OutboxEvent event = event();
         due(event);
 
         assertThat(relay.relayDue()).isEqualTo(1);
 
-        verify(handler).handle(event);
+        verify(transport).deliver(event.toEnvelope());
         verify(repository).save(event);
         assertThat(event.getStatus()).isEqualTo(OutboxStatus.PROCESSED);
         assertThat(event.getProcessedAt()).isEqualTo(T0);
@@ -65,10 +62,20 @@ class OutboxRelayTest {
     }
 
     @Test
+    void theEnvelopeCarriesTheRowsFields() {
+        OutboxEvent event = event();
+
+        EventEnvelope envelope = event.toEnvelope();
+
+        assertThat(envelope).isEqualTo(new EventEnvelope(event.getId(), "TestEvent", event.getAggregateId(),
+                "partner-a", "key-1", "{}"));
+    }
+
+    @Test
     void failureSchedulesARetryWithBackoff() {
-        OutboxEvent event = event(TYPE);
+        OutboxEvent event = event();
         due(event);
-        doThrow(new IllegalStateException("boom")).when(handler).handle(event);
+        doThrow(new IllegalStateException("boom")).when(transport).deliver(event.toEnvelope());
 
         relay.relayDue();
 
@@ -77,14 +84,14 @@ class OutboxRelayTest {
         assertThat(event.getNextAttemptAt()).isEqualTo(T0.plusSeconds(1));
         assertThat(event.getLastError()).isEqualTo("IllegalStateException: boom");
         verify(repository).save(event);
-        verify(handler, never()).onRetriesExhausted(any());
+        verify(transport, never()).onDead(any());
     }
 
     @Test
-    void theLastAllowedFailureMarksTheEventDeadAndTellsTheHandler() {
-        OutboxEvent event = event(TYPE);
+    void theLastAllowedFailureMarksTheEventDeadAndTellsTheTransport() {
+        OutboxEvent event = event();
         due(event);
-        doThrow(new IllegalStateException("boom")).when(handler).handle(event);
+        doThrow(new IllegalStateException("boom")).when(transport).deliver(event.toEnvelope());
 
         for (int i = 0; i < MAX_ATTEMPTS; i++) {
             relay.relayDue();
@@ -92,15 +99,15 @@ class OutboxRelayTest {
 
         assertThat(event.getStatus()).isEqualTo(OutboxStatus.DEAD);
         assertThat(event.getAttempts()).isEqualTo(MAX_ATTEMPTS);
-        verify(handler, times(1)).onRetriesExhausted(event);
+        verify(transport, times(1)).onDead(event.toEnvelope());
     }
 
     @Test
-    void aFailingRetriesExhaustedCallbackDoesNotEscape() {
-        OutboxEvent event = event(TYPE);
+    void aFailingOnDeadCallbackDoesNotEscape() {
+        OutboxEvent event = event();
         due(event);
-        doThrow(new IllegalStateException("boom")).when(handler).handle(event);
-        doThrow(new IllegalStateException("callback")).when(handler).onRetriesExhausted(event);
+        doThrow(new IllegalStateException("boom")).when(transport).deliver(event.toEnvelope());
+        doThrow(new IllegalStateException("callback")).when(transport).onDead(event.toEnvelope());
 
         for (int i = 0; i < MAX_ATTEMPTS; i++) {
             relay.relayDue();
@@ -111,10 +118,10 @@ class OutboxRelayTest {
 
     @Test
     void oneFailureDoesNotStopTheBatch() {
-        OutboxEvent failing = event(TYPE);
-        OutboxEvent next = event(TYPE);
+        OutboxEvent failing = event();
+        OutboxEvent next = event();
         due(failing, next);
-        doThrow(new IllegalStateException("boom")).when(handler).handle(failing);
+        doThrow(new IllegalStateException("boom")).when(transport).deliver(failing.toEnvelope());
 
         assertThat(relay.relayDue()).isEqualTo(2);
 
@@ -124,13 +131,15 @@ class OutboxRelayTest {
 
     @Test
     void anUnknownEventTypeIsMarkedDeadWithoutRetrying() {
-        OutboxEvent event = event("Unknown");
+        OutboxEvent event = event();
         due(event);
+        doThrow(new UnknownEventTypeException("TestEvent")).when(transport).deliver(event.toEnvelope());
 
         relay.relayDue();
 
         assertThat(event.getStatus()).isEqualTo(OutboxStatus.DEAD);
-        assertThat(event.getLastError()).isEqualTo("No handler for event type Unknown");
-        verify(handler, never()).handle(any());
+        assertThat(event.getAttempts()).isEqualTo(1);
+        assertThat(event.getLastError()).isEqualTo("No handler for event type TestEvent");
+        verify(transport, never()).onDead(any());
     }
 }

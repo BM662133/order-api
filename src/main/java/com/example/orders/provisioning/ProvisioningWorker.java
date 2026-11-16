@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 import com.example.orders.order.app.OrderEvents;
 import com.example.orders.order.domain.FailureReason;
 import com.example.orders.order.domain.Order;
-import com.example.orders.outbox.OutboxEvent;
+import com.example.orders.outbox.EventEnvelope;
 import com.example.orders.outbox.OutboxEventHandler;
 
 /**
@@ -52,13 +52,13 @@ public class ProvisioningWorker implements OutboxEventHandler {
     }
 
     @Override
-    public void handle(OutboxEvent event) {
-        String partnerId = event.getPartnerId();
-        UUID orderId = event.getAggregateId();
+    public void handle(EventEnvelope event) {
+        String partnerId = event.partnerId();
+        UUID orderId = event.aggregateId();
         for (int step = 1; step <= MAX_STEPS; step++) {
             Optional<Order> found = steps.find(partnerId, orderId);
             if (found.isEmpty()) {
-                log.warn("Order {} from outbox event {} not found; nothing to provision", orderId, event.getId());
+                log.warn("Order {} from outbox event {} not found; nothing to provision", orderId, event.eventId());
                 return;
             }
             Order order = found.get();
@@ -77,8 +77,8 @@ public class ProvisioningWorker implements OutboxEventHandler {
     }
 
     @Override
-    public void onRetriesExhausted(OutboxEvent event) {
-        steps.giveUp(event.getPartnerId(), event.getAggregateId());
+    public void onRetriesExhausted(EventEnvelope event) {
+        steps.giveUp(event.partnerId(), event.aggregateId());
     }
 
     private void advance(Order order) {

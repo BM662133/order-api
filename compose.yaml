@@ -1,0 +1,6 @@
+# Single-node Kafka (KRaft, no ZooKeeper) on localhost:9092 for the "kafka" profile.
+services:
+  kafka:
+    image: apache/kafka:3.9.0
+    ports:
+      - "9092:9092"

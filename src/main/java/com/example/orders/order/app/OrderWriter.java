@@ -36,7 +36,7 @@ class OrderWriter {
     @Transactional
     public Order insert(Order order) {
         Order saved = orderRepository.saveAndFlush(order);
-        outbox.append(saved.getId(), saved.getPartnerId(), OrderEvents.ORDER_CREATED,
+        outbox.append(saved.getId(), saved.getPartnerId(), OrderEvents.ORDER_CREATED, OrderEvents.messageKey(saved),
                 new OrderEvents.OrderCreated(saved.getId(), saved.getPartnerId()));
         return saved;
     }

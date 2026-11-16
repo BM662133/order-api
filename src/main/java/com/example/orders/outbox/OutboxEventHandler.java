@@ -6,12 +6,12 @@ public interface OutboxEventHandler {
     String eventType();
 
     /**
-     * Throw to have the relay retry later with backoff; the same event may also arrive again after a
-     * successful run (crash before it was marked processed).
+     * Throw to have the event retried later with backoff (by the outbox relay in-process, by the Kafka
+     * error handler with Kafka). The same event may also arrive again after a successful run.
      */
-    void handle(OutboxEvent event);
+    void handle(EventEnvelope event);
 
-    /** The event failed {@code max-attempts} times and is now DEAD; it will not be delivered again. */
-    default void onRetriesExhausted(OutboxEvent event) {
+    /** Every retry failed; the event will not be delivered again. */
+    default void onRetriesExhausted(EventEnvelope event) {
     }
 }

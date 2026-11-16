@@ -61,11 +61,12 @@ class OrderOutboxTest {
         String id = idOf(create(UUID.randomUUID().toString(), VALID_BODY).andExpect(status().isCreated()));
 
         Map<String, Object> event = jdbc.queryForMap(
-                "SELECT event_type, partner_id, status, attempts, payload FROM outbox_events WHERE aggregate_id = ?",
+                "SELECT event_type, partner_id, message_key, status, attempts, payload FROM outbox_events WHERE aggregate_id = ?",
                 UUID.fromString(id));
         assertThat(event)
                 .containsEntry("event_type", OrderEvents.ORDER_CREATED)
                 .containsEntry("partner_id", "partner-a")
+                .containsEntry("message_key", "partner-a:447700900123")
                 .containsEntry("status", "PENDING")
                 .containsEntry("attempts", 0);
         String payload = (String) event.get("payload");
