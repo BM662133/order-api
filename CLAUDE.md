@@ -18,7 +18,7 @@ Use the Maven wrapper (`./mvnw`), not a system `mvn`.
 - Single test class: `./mvnw test -Dtest=OrderApiApplicationTests`
 - Single test method: `./mvnw test -Dtest=OrderApiApplicationTests#healthEndpointReportsUp`
 - Run the app: `./mvnw spring-boot:run` (port 8080; health at `GET /actuator/health`)
-- Run with Kafka: `docker compose up -d` (single-node Kafka from `compose.yaml`), then `./mvnw spring-boot:run -Dspring-boot.run.profiles=kafka`. Only tested against `@EmbeddedKafka` so far; `compose.yaml` hasn't been run against a real broker.
+- Run with Kafka: `docker compose up -d` (single-node Kafka from `compose.yaml`), then `./mvnw spring-boot:run -Dspring-boot.run.profiles=kafka`. Verified by hand against the `compose.yaml` broker: happy path, consumer retries to DLT, and broker outage plus recovery. During an outage each publish attempt blocks the single relay thread for up to `delivery.timeout.ms` (10 s), so a large backlog drains slowly; batching sends would be the fix. On this machine Docker is Colima (`colima start` / `colima stop`), not Docker Desktop.
 - Package: `./mvnw package`
 
 There is no linter or formatter configured.

@@ -22,7 +22,13 @@ Features:
 ## Requirements
 
 - **Java 21.** Maven is not needed; use the bundled wrapper, `./mvnw`.
-- **Docker:** optional, and only needed to run against a real Kafka broker.
+- **Docker:** optional, and only needed to run against a real Kafka broker. On a Mac, Docker Desktop works, or a command-line setup through Homebrew:
+  ```bash
+  brew install colima docker docker-compose
+  # let Docker find the Compose plugin:
+  mkdir -p ~/.docker && echo '{"cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"]}' > ~/.docker/config.json
+  colima start          # starts the VM that runs containers; `colima stop` when done
+  ```
 
 There is nothing else to install. The database is in-memory H2, created fresh on every start, with the schema applied by Flyway migrations.
 
@@ -168,7 +174,24 @@ The API behaves the same in both modes. In Kafka mode:
 - **Keys:** records are keyed by `partnerId:msisdn`, so orders for the same number are processed in order.
 - **Configuration:** the settings are in `src/main/resources/application-kafka.properties`.
 
-**Note:** the Kafka path is tested against an embedded broker (`OutboxKafkaIntegrationTest`). The `compose.yaml` setup has not yet been run against a real broker.
+To see what's on the topics, including each record's key and headers:
+
+```bash
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+  --topic orders.events --from-beginning --property print.key=true --property print.headers=true
+```
+
+**Verified against a real broker** (`compose.yaml`, Kafka 3.9.0):
+
+| Scenario | Result |
+|---|---|
+| Normal order | `ACTIVE` in under a second |
+| MSISDN ending `0001` | 5 consumer attempts over about 16 s, then `FAILED` `PROVISIONING_UNAVAILABLE` and a record on `orders.events.DLT` (same partition number, cause header `GatewayUnavailableException`) |
+| Broker stopped, then started again | The API still accepts orders; they wait in `CREATED` and reach `ACTIVE` once Kafka is back |
+
+During an outage, each publish attempt blocks the single relay thread for up to about 10 s (`delivery.timeout.ms` in `application-kafka.properties`) before it is retried.
+
+The automated tests use an embedded broker instead (`OutboxKafkaIntegrationTest`).
 
 ## Configuration
 
