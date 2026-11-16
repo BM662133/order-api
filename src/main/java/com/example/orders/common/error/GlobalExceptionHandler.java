@@ -39,7 +39,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         problem.setType(ex.type());
         problem.setTitle(ex.title());
         ex.properties().forEach(problem::setProperty);
-        return ResponseEntity.status(ex.status()).body(problem);
+        return ResponseEntity.status(ex.status()).headers(ex.headers()).body(problem);
     }
 
     /** One entry of a validation-error problem's {@code errors} array. */

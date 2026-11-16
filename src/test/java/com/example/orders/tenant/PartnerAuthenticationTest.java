@@ -2,6 +2,7 @@ package com.example.orders.tenant;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -79,6 +80,8 @@ class PartnerAuthenticationTest {
     @Test
     void differentPathPartnerIsForbidden() throws Exception {
         mockMvc.perform(get("/partners/partner-b/probe").header(PartnerAuthenticationInterceptor.PARTNER_HEADER, "partner-a"))
+                .andExpect(header().doesNotExist("WWW-Authenticate"));
+        mockMvc.perform(get("/partners/partner-b/probe").header(PartnerAuthenticationInterceptor.PARTNER_HEADER, "partner-a"))
                 .andExpect(status().isForbidden())
                 .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.type").value(ProblemTypes.PARTNER_MISMATCH.toString()))
@@ -93,6 +96,7 @@ class PartnerAuthenticationTest {
     private void expectUnauthenticated(RequestBuilder request) throws Exception {
         mockMvc.perform(request)
                 .andExpect(status().isUnauthorized())
+                .andExpect(header().string("WWW-Authenticate", "Partner realm=\"order-api\""))
                 .andExpect(content().contentType(MediaType.APPLICATION_PROBLEM_JSON))
                 .andExpect(jsonPath("$.type").value(ProblemTypes.UNAUTHENTICATED.toString()))
                 .andExpect(jsonPath("$.title").value("Unauthenticated"))

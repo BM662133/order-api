@@ -3,11 +3,13 @@ package com.example.orders.common.error;
 import java.net.URI;
 import java.util.Map;
 
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 
 /**
  * Base for exceptions that map to a specific RFC 7807 response. Subclasses fix the status, type and
- * title; {@link #properties()} adds problem-specific extension members.
+ * title; {@link #properties()} adds problem-specific extension members and {@link #headers()} response
+ * headers.
  */
 public abstract class ApiException extends RuntimeException {
 
@@ -40,5 +42,9 @@ public abstract class ApiException extends RuntimeException {
 
     public Map<String, Object> properties() {
         return Map.of();
+    }
+
+    public HttpHeaders headers() {
+        return HttpHeaders.EMPTY;
     }
 }
