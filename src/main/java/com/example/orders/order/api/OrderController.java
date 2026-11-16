@@ -43,8 +43,7 @@ public class OrderController {
     public ResponseEntity<OrderResponse> create(PartnerContext partner,
             @RequestHeader(name = IdempotencyKey.HEADER, required = false) String idempotencyKey,
             @Valid @RequestBody CreateOrderRequest request) {
-        CreateResult result = orderService.create(
-                partner, idempotencyKey, request.msisdn(), request.planCode(), request.simType());
+        CreateResult result = orderService.create(partner, idempotencyKey, request.toCommand());
         Order order = result.order();
         URI location = ServletUriComponentsBuilder.fromCurrentContextPath()
                 .path("/orders/{id}")

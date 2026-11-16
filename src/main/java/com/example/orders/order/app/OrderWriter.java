@@ -8,6 +8,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import com.example.orders.order.domain.CancelOutcome;
 import com.example.orders.order.domain.Order;
+import com.example.orders.order.persistence.IdempotencyRecord;
+import com.example.orders.order.persistence.IdempotencyRecordRepository;
 import com.example.orders.order.persistence.OrderRepository;
 import com.example.orders.outbox.Outbox;
 
@@ -20,22 +22,31 @@ import com.example.orders.outbox.Outbox;
 class OrderWriter {
 
     private final OrderRepository orderRepository;
+    private final IdempotencyRecordRepository idempotencyRecords;
     private final Outbox outbox;
+    private final IdempotencyProperties idempotencyProperties;
     private final Clock clock;
 
-    OrderWriter(OrderRepository orderRepository, Outbox outbox, Clock clock) {
+    OrderWriter(OrderRepository orderRepository, IdempotencyRecordRepository idempotencyRecords, Outbox outbox,
+            IdempotencyProperties idempotencyProperties, Clock clock) {
         this.orderRepository = orderRepository;
+        this.idempotencyRecords = idempotencyRecords;
         this.outbox = outbox;
+        this.idempotencyProperties = idempotencyProperties;
         this.clock = clock;
     }
 
     /**
-     * Inserts the order and its {@code OrderCreated} event atomically. The order is flushed first, so a
-     * duplicate idempotency key fails before the event is written.
+     * Inserts the order, reserves its idempotency key and records its {@code OrderCreated} event,
+     * atomically. An expired reservation of the same key is deleted first, so the key can be reused.
+     * The key row is flushed before the event, so a duplicate key (a concurrent request with the same
+     * key won) fails here and rolls everything back.
      */
     @Transactional
     public Order insert(Order order) {
+        idempotencyRecords.deleteExpired(order.getPartnerId(), order.getIdempotencyKey(), clock.instant());
         Order saved = orderRepository.saveAndFlush(order);
+        idempotencyRecords.saveAndFlush(IdempotencyRecord.forOrder(saved, idempotencyProperties.keyTtl()));
         outbox.append(saved.getId(), saved.getPartnerId(), OrderEvents.ORDER_CREATED, OrderEvents.messageKey(saved),
                 new OrderEvents.OrderCreated(saved.getId(), saved.getPartnerId()));
         return saved;

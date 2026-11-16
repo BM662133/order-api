@@ -1,7 +1,6 @@
 package com.example.orders.common.error;
 
 import java.util.Arrays;
-import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -42,17 +41,13 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return ResponseEntity.status(ex.status()).headers(ex.headers()).body(problem);
     }
 
-    /** One entry of a validation-error problem's {@code errors} array. */
-    record FieldViolation(String field, String message) {
-    }
-
     /** Bean Validation failures on a request body: one entry per invalid field, sorted for stable output. */
     @Override
     protected ResponseEntity<Object> handleMethodArgumentNotValid(MethodArgumentNotValidException ex,
             HttpHeaders headers, HttpStatusCode status, WebRequest request) {
         List<FieldViolation> errors = ex.getBindingResult().getFieldErrors().stream()
                 .map(e -> new FieldViolation(e.getField(), String.valueOf(e.getDefaultMessage())))
-                .sorted(Comparator.comparing(FieldViolation::field).thenComparing(FieldViolation::message))
+                .sorted(FieldViolation.ORDER)
                 .toList();
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(
                 status, "Request has " + errors.size() + " invalid field(s).");

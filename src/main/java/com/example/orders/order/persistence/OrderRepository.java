@@ -22,8 +22,6 @@ public interface OrderRepository extends Repository<Order, UUID> {
 
     Optional<Order> findByIdAndPartnerId(UUID id, String partnerId);
 
-    Optional<Order> findByPartnerIdAndIdempotencyKey(String partnerId, String idempotencyKey);
-
     /** Whether another of the partner's orders for this MSISDN is in one of {@code statuses}. */
     boolean existsByPartnerIdAndMsisdnAndStatusInAndIdNot(String partnerId, String msisdn,
             Collection<OrderStatus> statuses, UUID id);

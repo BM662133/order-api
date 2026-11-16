@@ -7,6 +7,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.sql.Timestamp;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.util.Map;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
@@ -183,5 +188,81 @@ class OrderIdempotencyApiTest {
         create("partner-a", key, BODY)
                 .andExpect(status().isCreated())
                 .andExpect(header().doesNotExist(OrderController.IDEMPOTENT_REPLAYED_HEADER));
+    }
+
+    // ---------- checks that depend on database state run after the replay lookup ----------
+
+    @Test
+    void aRetryAfterThePlanWasDeactivatedStillReplays() throws Exception {
+        String plan = "TMP_" + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        jdbc.update("INSERT INTO plans (code, name, active) VALUES (?, 'Temporary', TRUE)", plan);
+        String body = """
+                {"msisdn": "+447700900123", "planCode": "%s", "simType": "ESIM"}""".formatted(plan);
+        String key = newKey();
+        String id = idOf(create("partner-a", key, body).andExpect(status().isCreated()).andReturn());
+        jdbc.update("UPDATE plans SET active = FALSE WHERE code = ?", plan);
+
+        create("partner-a", key, body)
+                .andExpect(status().isCreated())
+                .andExpect(header().string(OrderController.IDEMPOTENT_REPLAYED_HEADER, "true"))
+                .andExpect(jsonPath("$.id").value(id));
+
+        create("partner-a", newKey(), body)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.type").value(ProblemTypes.VALIDATION_ERROR.toString()))
+                .andExpect(jsonPath("$.detail").value("Request has 1 invalid field(s)."))
+                .andExpect(jsonPath("$.errors[0].field").value("planCode"))
+                .andExpect(jsonPath("$.errors[0].message").value("must be an active plan"));
+    }
+
+    // ---------- key expiry ----------
+
+    private void expire(String partner, String key) {
+        jdbc.update("UPDATE idempotency_keys SET expires_at = ? WHERE partner_id = ? AND idempotency_key = ?",
+                Timestamp.from(Instant.now().minusSeconds(1)), partner, key);
+    }
+
+    private static Instant instant(Object timestampWithTimeZone) {
+        return ((OffsetDateTime) timestampWithTimeZone).toInstant();
+    }
+
+    @Test
+    void aKeyIsReservedForTheConfiguredTtlFromCreation() throws Exception {
+        String key = newKey();
+        create("partner-a", key, BODY).andExpect(status().isCreated());
+
+        Map<String, Object> row = jdbc.queryForMap("""
+                SELECT k.expires_at, o.created_at FROM idempotency_keys k JOIN orders o ON o.id = k.order_id
+                WHERE k.partner_id = 'partner-a' AND k.idempotency_key = ?""", key);
+        assertThat(instant(row.get("expires_at"))).isEqualTo(instant(row.get("created_at")).plus(Duration.ofHours(24)));
+    }
+
+    @Test
+    void afterExpiryTheSameRequestCreatesANewOrder() throws Exception {
+        String key = newKey();
+        String first = idOf(create("partner-a", key, BODY).andExpect(status().isCreated()).andReturn());
+        expire("partner-a", key);
+
+        String second = idOf(create("partner-a", key, BODY)
+                .andExpect(status().isCreated())
+                .andExpect(header().doesNotExist(OrderController.IDEMPOTENT_REPLAYED_HEADER))
+                .andReturn());
+
+        assertThat(second).isNotEqualTo(first);
+        assertThat(rowsFor("partner-a", key)).as("both orders keep the key that created them").isEqualTo(2);
+        create("partner-a", key, BODY)
+                .andExpect(header().string(OrderController.IDEMPOTENT_REPLAYED_HEADER, "true"))
+                .andExpect(jsonPath("$.id").value(second));
+    }
+
+    @Test
+    void afterExpiryTheKeyMayBeUsedForADifferentRequest() throws Exception {
+        String key = newKey();
+        create("partner-a", key, BODY).andExpect(status().isCreated());
+        expire("partner-a", key);
+
+        create("partner-a", key, """
+                {"msisdn": "+447700900999", "planCode": "BASIC_5G", "simType": "ESIM"}""")
+                .andExpect(status().isCreated());
     }
 }
