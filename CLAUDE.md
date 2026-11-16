@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Order API: Spring Boot 3.5.x (Java 21, Maven), root package `com.example.orders`. Partners order a SIM/plan for a subscriber; orders move through the `OrderStatus` state machine. Built in slices (see `git log`). Stay on Spring Boot 3.x (start.spring.io only generates 4.x, so don't regenerate from it).
 
+`README.md` is the user-facing guide: how to run, curl walkthroughs, error table, config properties. Keep it in sync when endpoints, status codes, `orders.*` properties or the fake gateway's MSISDN rules change.
+
 Packages are by feature: `common/error` (ProblemDetail handling), `common/time` (Clock), `tenant` (partner auth), `plan` (plan catalogue + `@KnownPlan`), `order/{api,app,domain,persistence}` (controller + DTOs → service → entity/state machine → repository), `order/history` (status audit trail), `outbox` (transactional outbox, relay, and the pluggable transport: in-process by default, `outbox/kafka` with the `kafka` profile) and `provisioning` (async worker that drives orders to a final status, fake carrier gateway).
 
 ## Commands
@@ -16,7 +18,7 @@ Use the Maven wrapper (`./mvnw`), not a system `mvn`.
 - Single test class: `./mvnw test -Dtest=OrderApiApplicationTests`
 - Single test method: `./mvnw test -Dtest=OrderApiApplicationTests#healthEndpointReportsUp`
 - Run the app: `./mvnw spring-boot:run` (port 8080; health at `GET /actuator/health`)
-- Run with Kafka: `docker compose up -d` (single-node Kafka from `compose.yaml`), then `./mvnw spring-boot:run -Dspring-boot.run.profiles=kafka`
+- Run with Kafka: `docker compose up -d` (single-node Kafka from `compose.yaml`), then `./mvnw spring-boot:run -Dspring-boot.run.profiles=kafka`. Only tested against `@EmbeddedKafka` so far; `compose.yaml` hasn't been run against a real broker.
 - Package: `./mvnw package`
 
 There is no linter or formatter configured.
@@ -27,10 +29,9 @@ There is no linter or formatter configured.
 - **Database** is in-memory H2 (`jdbc:h2:mem:orders`), recreated on every start — no data persists between runs or tests.
 - `spring.jpa.open-in-view=false`: load whatever a response needs inside the service/transaction layer, not lazily in controllers.
 - **Actuator** exposes only the `health` endpoint over HTTP (`management.endpoints.web.exposure.include`).
-
 - **Lombok** is optional and configured as an annotation processor in `pom.xml`; it is excluded from the packaged jar.
-- **Smoke test** `OrderApiApplicationTests` boots the full app on a random port and asserts `/actuator/health` returns `UP` — it covers context startup, DB connection, and Flyway together. Keep it passing.
-
+- **Smoke test** `OrderApiApplicationTests` boots the full app on a random port and asserts `/actuator/health` returns `UP` — it covers context startup, DB connection, and Flyway together. Keep it passing. It also asserts that the default mode creates no Kafka beans.
+- `.gitignore` ignores all of `.claude/` (personal Claude Code settings). To share project-level config such as `.claude/commands/`, switch to `.claude/*` plus `!` negations; a file can't be re-included under an ignored directory.
 - Use constructor injection, no field @Autowired
 - Return RFC 7807 ProblemDetail for errors
 - Every feature needs tests; run ./mvnw test after changes
@@ -41,7 +42,7 @@ There is no linter or formatter configured.
 - **Errors:** throw a subclass of `common.error.ApiException` (it carries status, `type` URI, title and extra `properties()`); `GlobalExceptionHandler` renders it as `application/problem+json`. Add new `type` URIs to `ProblemTypes` and never change existing ones. Unexpected exceptions become a generic 500 — never put internal details in a response.
 - **Partner auth:** `PartnerAuthenticationInterceptor` resolves the `X-Partner-Id` header (a stand-in for real auth) on the paths in `TenantWebConfig.AUTHENTICATED_PATHS` (`/partners/**`, `/orders/**`); missing/unknown/inactive → 401 with a `WWW-Authenticate: Partner realm="order-api"` challenge (an `ApiException` can add response headers via `headers()`). Controllers get the caller by declaring a `PartnerContext` parameter. New API paths must be under those patterns. A route path variable named exactly `{partnerId}` is checked against the caller by the interceptor (403 `partner-mismatch`, before body validation) — name it that way and don't re-check it in controllers.
 - **Tenant isolation:** repositories extend Spring Data `Repository` (not `JpaRepository`) and declare only the finders they need; tenant-owned data is looked up by `partnerId` as well as id, and another partner's resource is a 404, never a 403. The one exception is `ProvisioningSweepQueries`, the sweeper's cross-partner reads. They return only (id, partner), and every follow-up load or write goes through the scoped paths.
-- **Status changes** go through `OrderStatus.checkTransitionTo`, which throws `IllegalTransitionException` (409). Allowed transitions are declared in its exhaustive `switch`; update `OrderStatusTest.LEGAL` alongside it.
+- **Status changes** happen only through `Order`'s methods (`transitionTo`, `fail`, `cancel`, `completeCancellation`). All of them funnel into the private `changeStatus`, which checks `OrderStatus.canTransitionTo` (throwing `IllegalTransitionException`, 409) and records the history event. Never set status any other way, or the change escapes both checks. Allowed transitions are declared in `OrderStatus`'s exhaustive `switch`; update `OrderStatusTest.LEGAL` alongside it.
 - **Inject `Clock`** instead of calling `Instant.now()`, so tests can control time.
 - **Idempotent create:** `POST /partners/{partnerId}/orders` requires `Idempotency-Key` (1–100 visible ASCII).
   - **Guarantee:** a key is reserved in `idempotency_keys`; its unique constraint `uq_idempotency_keys_partner_key (partner_id, idempotency_key)` is the guarantee.
@@ -71,6 +72,10 @@ There is no linter or formatter configured.
 
 - `@WebMvcTest` must name its controllers (`@WebMvcTest(controllers = ...)`) and declare `@MockitoBean PartnerRepository`, because `TenantWebConfig` needs it.
 - Test-only controllers are static nested `@RestController`s inside the test class, registered with `@Import`; Spring Boot's `TestTypeExcludeFilter` keeps them out of other test contexts.
-- **Background jobs are off in tests.** `src/test/resources/config/application.properties` sets `orders.outbox.scheduling-enabled=false`, `initial-backoff=0s`, `orders.idempotency.purge-enabled=false` and `orders.provisioning.sweep.enabled=false`. Call `relayDue()`, `purgeExpired()` and `sweep()` directly. The file layers on top of the main `application.properties`. Every test context shares one H2 database, so a live scheduler would process other classes' events. Drive delivery with `OutboxRelay.relayDue()`, and settle leftovers in `@BeforeEach` (see `ProvisioningFlowTest`). Only `ProvisioningEndToEndTest` enables scheduling, with `@DirtiesContext` so its scheduler stops afterwards. `OutboxKafkaIntegrationTest` runs the `kafka` profile against `@EmbeddedKafka` (no Docker), also with `@DirtiesContext`. Consumption there is asynchronous, so it uses Awaitility; to know that a record was consumed, follow it with a same-key record and wait for that one. Provisioning tests need unique MSISDNs, because other tests' orders share `+447700900123`.
-- Shared test helpers in `support/`: `OutboxTestSupport` (`drain`, `uniqueMsisdn`) and `StatusHistory` (`timeline` as compact strings like `"CREATED->VALIDATED by SYSTEM"`). Setting status with SQL in tests bypasses history, so don't assert timelines for those orders.
+- **Background jobs are off in tests.** `src/test/resources/config/application.properties` layers on top of the main `application.properties` and sets `orders.outbox.scheduling-enabled=false`, `orders.outbox.initial-backoff=0s`, `orders.idempotency.purge-enabled=false` and `orders.provisioning.sweep.enabled=false`. Every test context shares one H2 database, so a live scheduler in any cached context would process other classes' data.
+  - Call `OutboxRelay.relayDue()`, `IdempotencyKeyPurge.purgeExpired()` and `ProvisioningSweeper.sweep()` directly, and settle leftover events in `@BeforeEach` with `OutboxTestSupport.drain` (see `ProvisioningFlowTest`). With zero backoff, N `relayDue()` calls are N real attempts.
+  - Only `ProvisioningEndToEndTest` turns scheduling on, with `@DirtiesContext` so its scheduler stops afterwards.
+  - `OutboxKafkaIntegrationTest` runs the `kafka` profile against `@EmbeddedKafka` (no Docker), also with `@DirtiesContext`. Consumption there is asynchronous, so it uses Awaitility. To prove that a no-op record was consumed, follow it with a same-key record (same partition) and wait for that one.
+  - Provisioning tests need unique MSISDNs (`OutboxTestSupport.uniqueMsisdn`), because other tests' orders share `+447700900123` and would trip `MSISDN_IN_USE`.
+- Shared test helpers in `support/`: `Concurrently`, `OutboxTestSupport` (`drain`, `uniqueMsisdn`) and `StatusHistory` (`timeline` as compact strings like `"CREATED->VALIDATED by SYSTEM"`). Setting status with SQL in tests bypasses history, so don't assert timelines for those orders.
 - Seed data from `V1__partners_and_plans.sql` is available in `@SpringBootTest`: partners `partner-a`, `partner-b` (active), `partner-suspended` (inactive); plans `BASIC_5G`, `UNLIMITED` (active), `LEGACY_3G` (inactive).
