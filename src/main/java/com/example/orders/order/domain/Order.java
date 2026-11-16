@@ -71,6 +71,10 @@ public class Order {
     @Column(name = "cancel_requested_at")
     private Instant cancelRequestedAt;
 
+    /** Set once the sweeper has confirmed the carrier side of a FAILED order whose line state was uncertain. */
+    @Column(name = "reconciled_at")
+    private Instant reconciledAt;
+
     /** Null until first persisted, which also tells Spring Data the entity is new (no SELECT before INSERT). */
     @Version
     private Long version;
@@ -166,6 +170,20 @@ public class Order {
         return cancelRequestedAt != null;
     }
 
+    /**
+     * Records that the carrier side was checked (and cleaned up if needed) after an uncertain failure.
+     * Not a status change, so it adds no history entry.
+     *
+     * @throws IllegalStateException unless the order is FAILED and not yet reconciled
+     */
+    public void markReconciled(Clock clock) {
+        if (status != OrderStatus.FAILED || reconciledAt != null) {
+            throw new IllegalStateException("Order " + id + " cannot be reconciled in status " + status
+                    + (reconciledAt != null ? " (already reconciled)" : ""));
+        }
+        this.reconciledAt = now(clock);
+    }
+
     /** Status changes since the last save. Spring Data publishes them on {@code save*}, then clears them. */
     @DomainEvents
     public List<OrderStatusChanged> statusChanges() {
@@ -241,6 +259,10 @@ public class Order {
 
     public Instant getCancelRequestedAt() {
         return cancelRequestedAt;
+    }
+
+    public Instant getReconciledAt() {
+        return reconciledAt;
     }
 
     public Instant getCreatedAt() {

@@ -9,10 +9,12 @@ import java.util.function.Predicate;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.example.orders.order.app.OrderEvents;
 import com.example.orders.order.domain.FailureReason;
 import com.example.orders.order.domain.Order;
 import com.example.orders.order.domain.OrderStatus;
 import com.example.orders.order.persistence.OrderRepository;
+import com.example.orders.outbox.Outbox;
 
 /**
  * One short transaction per provisioning step, in its own bean so {@link ProvisioningWorker} calls them
@@ -25,11 +27,14 @@ class ProvisioningSteps {
 
     private final OrderRepository orderRepository;
     private final EligibilityChecker eligibilityChecker;
+    private final Outbox outbox;
     private final Clock clock;
 
-    ProvisioningSteps(OrderRepository orderRepository, EligibilityChecker eligibilityChecker, Clock clock) {
+    ProvisioningSteps(OrderRepository orderRepository, EligibilityChecker eligibilityChecker, Outbox outbox,
+            Clock clock) {
         this.orderRepository = orderRepository;
         this.eligibilityChecker = eligibilityChecker;
+        this.outbox = outbox;
         this.clock = clock;
     }
 
@@ -81,6 +86,30 @@ class ProvisioningSteps {
         update(partnerId, orderId, order -> !order.getStatus().isTerminal(), order -> order.fail(
                 order.isCancelRequested() ? FailureReason.COMPENSATION_FAILED : FailureReason.PROVISIONING_UNAVAILABLE,
                 clock));
+    }
+
+    /**
+     * Records a {@code ProvisioningRetryRequested} event for a stalled order, if it is still unfinished.
+     *
+     * @return whether an event was recorded
+     */
+    @Transactional
+    public boolean requestRetry(String partnerId, UUID orderId) {
+        return orderRepository.findByIdAndPartnerId(orderId, partnerId)
+                .filter(order -> !order.getStatus().isTerminal())
+                .map(order -> {
+                    outbox.append(order.getId(), partnerId, OrderEvents.PROVISIONING_RETRY_REQUESTED,
+                            OrderEvents.messageKey(order), new OrderEvents.OrderCreated(order.getId(), partnerId));
+                    return true;
+                })
+                .orElse(false);
+    }
+
+    /** Marks a FAILED order's carrier side as checked. */
+    @Transactional
+    public void reconciled(String partnerId, UUID orderId) {
+        update(partnerId, orderId, order -> order.getStatus() == OrderStatus.FAILED && order.getReconciledAt() == null,
+                order -> order.markReconciled(clock));
     }
 
     private void update(String partnerId, UUID orderId, Predicate<Order> applies, Consumer<Order> change) {

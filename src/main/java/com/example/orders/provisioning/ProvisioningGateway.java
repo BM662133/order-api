@@ -14,4 +14,11 @@ public interface ProvisioningGateway {
 
     /** @throws GatewayUnavailableException transient; the outbox relay retries later */
     void deactivate(LineRequest line);
+
+    /**
+     * Whether the carrier currently has the line active; used to reconcile after uncertain failures.
+     *
+     * @throws GatewayUnavailableException transient; the sweeper tries again next run
+     */
+    boolean isActive(LineRequest line);
 }

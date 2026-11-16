@@ -306,6 +306,30 @@ class OrderTest {
     }
 
     @Test
+    void aFailedOrderCanBeMarkedReconciledOnceWithoutAStatusChange() {
+        Order order = orderIn(OrderStatus.PROVISIONING);
+        order.fail(FailureReason.PROVISIONING_UNAVAILABLE, CLOCK);
+        int changes = order.statusChanges().size();
+        Instant later = T0.plusSeconds(5);
+
+        order.markReconciled(Clock.fixed(later, ZoneOffset.UTC));
+
+        assertThat(order.getReconciledAt()).isEqualTo(later);
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.FAILED);
+        assertThat(order.statusChanges()).hasSize(changes);
+        assertThatThrownBy(() -> order.markReconciled(CLOCK)).isInstanceOf(IllegalStateException.class);
+    }
+
+    @ParameterizedTest
+    @EnumSource(names = {"CREATED", "VALIDATED", "PROVISIONING", "ACTIVE", "CANCELLED"})
+    void onlyFailedOrdersCanBeReconciled(OrderStatus status) {
+        Order order = orderIn(status);
+
+        assertThatThrownBy(() -> order.markReconciled(CLOCK)).isInstanceOf(IllegalStateException.class);
+        assertThat(order.getReconciledAt()).isNull();
+    }
+
+        @Test
     void transitionToNullIsRejected() {
         assertThatNullPointerException().isThrownBy(() -> newOrder().transitionTo(null, CLOCK));
     }

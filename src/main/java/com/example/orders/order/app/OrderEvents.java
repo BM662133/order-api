@@ -10,6 +10,10 @@ public final class OrderEvents {
     /** Recorded with every new order; starts provisioning. */
     public static final String ORDER_CREATED = "OrderCreated";
 
+    /** Recorded by the provisioning sweeper for an order that stalled; resumes provisioning. */
+    public static final String PROVISIONING_RETRY_REQUESTED = "ProvisioningRetryRequested";
+
+    /** Payload of both event types. */
     public record OrderCreated(UUID orderId, String partnerId) {
     }
 
