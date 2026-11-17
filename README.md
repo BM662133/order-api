@@ -43,7 +43,7 @@ There is nothing else to install. By default the database is in-memory H2, creat
 
 The Kafka tests use an embedded broker, so Docker is not needed for tests either.
 
-`PostgresSmokeTest` runs the app on a real PostgreSQL through Testcontainers, and is skipped when Docker isn't available (the summary shows 6 skipped). With Colima, Testcontainers needs to be told where Docker is:
+`PostgresSmokeTest` and `PostgresRelayConcurrencyTest` run on a real PostgreSQL through Testcontainers, and are skipped when Docker isn't available (the summary shows 8 skipped). With Colima, Testcontainers needs to be told where Docker is:
 
 ```bash
 DOCKER_HOST=unix://$HOME/.colima/default/docker.sock \
