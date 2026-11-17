@@ -36,10 +36,6 @@ There is no linter or formatter configured.
 - **Lombok** is optional and configured as an annotation processor in `pom.xml`; it is excluded from the packaged jar.
 - **Smoke test** `OrderApiApplicationTests` boots the full app on a random port and asserts `/actuator/health` returns `UP` — it covers context startup, DB connection, and Flyway together. Keep it passing. It also asserts that the default mode creates no Kafka beans.
 - `.gitignore` ignores all of `.claude/` (personal Claude Code settings). To share project-level config such as `.claude/commands/`, switch to `.claude/*` plus `!` negations; a file can't be re-included under an ignored directory.
-- Use constructor injection, no field @Autowired
-- Return RFC 7807 ProblemDetail for errors
-- Every feature needs tests; run ./mvnw test after changes
-- Keep controllers thin; logic lives in services
 
 ## Errors, tenancy and state
 
