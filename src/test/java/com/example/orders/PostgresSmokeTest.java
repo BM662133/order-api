@@ -3,6 +3,8 @@ package com.example.orders;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.function.IntFunction;
@@ -25,6 +27,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import com.example.orders.common.lock.JobLocks;
 import com.example.orders.order.api.OrderController;
 import com.example.orders.order.app.IdempotencyKey;
 import com.example.orders.outbox.OutboxRelay;
@@ -38,7 +41,8 @@ import com.jayway.jsonpath.JsonPath;
 /**
  * The whole app on a real PostgreSQL (the "postgres" profile's database), to catch what H2 lets through:
  * migration syntax, Hibernate's schema validation, the constraint name a duplicate idempotency key
- * reports, and the hand-written queries (head-of-line {@code findDue}, the sweeper's SQL). Skipped when
+ * reports, the hand-written queries (head-of-line {@code findDueForClaim}, the sweeper's SQL) and job
+ * locks under contention. Skipped when
  * Docker isn't available, so the rest of the suite still runs without it.
  */
 @Testcontainers(disabledWithoutDocker = true)
@@ -174,5 +178,17 @@ class PostgresSmokeTest {
         OutboxTestSupport.drain(relay);
 
         assertThat(status(id)).isEqualTo("ACTIVE");
+    }
+
+    /** Postgres serialises the conditional UPDATEs and re-checks the condition for the waiters. */
+    @Test
+    void ofManyInstancesRacingForAJobLockExactlyOneGetsIt() throws Exception {
+        jdbc.update("UPDATE job_locks SET locked_by = NULL, locked_until = CURRENT_TIMESTAMP - INTERVAL '1' MINUTE "
+                + "WHERE name = 'provisioning-sweep'");
+
+        List<Boolean> acquired = Concurrently.run(8, i -> () -> new JobLocks(jdbc, Clock.systemUTC(),
+                Duration.ofMinutes(5), "instance-" + i).tryAcquire("provisioning-sweep"));
+
+        assertThat(acquired).containsOnlyOnce(true);
     }
 }

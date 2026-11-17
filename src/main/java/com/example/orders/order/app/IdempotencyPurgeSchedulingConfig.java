@@ -5,20 +5,30 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 
-/** Runs {@link IdempotencyKeyPurge}; {@code orders.idempotency.purge-enabled=false} removes it (tests do). */
+import com.example.orders.common.lock.JobLocks;
+
+/**
+ * Runs {@link IdempotencyKeyPurge}, on one instance at a time ({@link JobLocks}).
+ * {@code orders.idempotency.purge-enabled=false} removes it (tests do).
+ */
 @Configuration(proxyBeanMethods = false)
 @EnableScheduling
 @ConditionalOnProperty(name = "orders.idempotency.purge-enabled", havingValue = "true", matchIfMissing = true)
 class IdempotencyPurgeSchedulingConfig {
 
-    private final IdempotencyKeyPurge purge;
+    /** Its row in {@code job_locks} comes from migration V10. */
+    static final String JOB = "idempotency-key-purge";
 
-    IdempotencyPurgeSchedulingConfig(IdempotencyKeyPurge purge) {
+    private final IdempotencyKeyPurge purge;
+    private final JobLocks locks;
+
+    IdempotencyPurgeSchedulingConfig(IdempotencyKeyPurge purge, JobLocks locks) {
         this.purge = purge;
+        this.locks = locks;
     }
 
     @Scheduled(fixedDelayString = "${orders.idempotency.purge-interval:1h}")
     void purgeExpiredKeys() {
-        purge.purgeExpired();
+        locks.runExclusively(JOB, purge::purgeExpired);
     }
 }

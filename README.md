@@ -213,7 +213,7 @@ docker compose up -d postgres                                 # PostgreSQL 17 on
 - **Schema:** Flyway applies the migrations on first start and only new ones after that.
 - **Connection:** database, user and password are all `orders` (in `src/main/resources/application-postgres.properties`).
 
-Several instances can share one database: each relay pass claims its events first (`SELECT … FOR UPDATE SKIP LOCKED` plus a 60 s lease), so every event is delivered by one instance, and events with the same key stay in order. The background sweeper is not yet coordinated, so two instances may each re-queue the same stalled order (harmless, but wasteful).
+Several instances can share one database: each relay pass claims its events first (`SELECT … FOR UPDATE SKIP LOCKED` plus a 60 s lease), so every event is delivered by one instance, and events with the same key stay in order. The background jobs (sweeper, key purge) take a lock row in `job_locks` first, so two instances never run the same job at the same time.
 
 ## Configuration
 
@@ -230,6 +230,7 @@ Every setting has a default in `src/main/resources/application.properties`. Over
 | `orders.idempotency.purge-interval` | `1h` | How often expired keys are deleted |
 | `orders.provisioning.sweep.interval` | `1m` | How often the sweeper runs |
 | `orders.provisioning.sweep.stalled-after` | `15m` | Idle time after which an unfinished order is retried |
+| `orders.jobs.lock-lease` | `5m` | With several instances: how long a background job's lock outlives an instance that died mid-run |
 
 ## Project layout
 
@@ -242,7 +243,7 @@ src/main/java/com/example/orders/
                  → persistence; history/ (status audit trail)
   outbox/        transactional outbox, relay, in-process transport; kafka/ (Kafka transport)
   provisioning/  worker, sweeper, eligibility checks, fake gateway
-src/main/resources/db/migration/   Flyway migrations V1–V9
+src/main/resources/db/migration/   Flyway migrations V1–V10
 ```
 
 `CLAUDE.md` describes the architecture and conventions in more detail.
