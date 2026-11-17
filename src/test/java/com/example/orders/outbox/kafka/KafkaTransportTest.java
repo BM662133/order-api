@@ -223,6 +223,27 @@ class KafkaTransportTest {
     }
 
     @Test
+    void anInterruptWhileWaitingSpendsNoAttemptsAndKeepsTheInterruptFlag() {
+        EventEnvelope acknowledged = event();
+        EventEnvelope pending = event();
+        when(template.send(recordOf(acknowledged))).thenReturn(acked());
+        when(template.send(recordOf(pending))).thenReturn(new CompletableFuture<>());
+
+        Thread.currentThread().interrupt();
+        List<DeliveryResult> results;
+        try {
+            results = transport.deliverAll(List.of(acknowledged, pending));
+        } finally {
+            assertThat(Thread.interrupted()).as("interrupt flag restored (and cleared here)").isTrue();
+        }
+
+        // An already-completed future returns despite the interrupt; only the pending one is cut short.
+        assertThat(results.get(0)).isInstanceOf(DeliveryResult.Delivered.class);
+        assertThat(results.get(1)).isInstanceOfSatisfying(DeliveryResult.Unavailable.class,
+                u -> assertThat(u.error()).hasCauseInstanceOf(InterruptedException.class));
+    }
+
+    @Test
     void anEmptyBatchSendsNothing() {
         assertThat(transport.deliverAll(List.of())).isEmpty();
         verifyNoInteractions(template);

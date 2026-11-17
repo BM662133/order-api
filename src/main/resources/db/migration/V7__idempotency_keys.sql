@@ -15,9 +15,10 @@ CREATE TABLE idempotency_keys (
 -- Serves the purge.
 CREATE INDEX ix_idempotency_keys_expires ON idempotency_keys (expires_at);
 
--- Existing orders keep their keys for the default 24h from creation.
+-- Existing orders keep their keys for the default 24h from creation. (Standard interval syntax, so this
+-- runs on both H2 and Postgres.)
 INSERT INTO idempotency_keys (partner_id, idempotency_key, order_id, created_at, expires_at)
-SELECT partner_id, idempotency_key, id, created_at, DATEADD('HOUR', 24, created_at)
+SELECT partner_id, idempotency_key, id, created_at, created_at + INTERVAL '24' HOUR
 FROM orders;
 
 ALTER TABLE orders DROP CONSTRAINT uq_orders_partner_idempotency;

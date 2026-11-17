@@ -107,10 +107,11 @@ public class KafkaTransport implements OutboxTransport {
                 results[i] = DeliveryResult.delivered();
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
-                // Outcome unknown: report failed so the relay retries (at-least-once; handlers are idempotent).
+                // Shutting down, outcome unknown. Says nothing about the events, so no attempt is spent:
+                // they stay PENDING and are sent again (at-least-once; handlers are idempotent).
                 for (int j = i; j < futures.size(); j++) {
                     if (results[j] == null) {
-                        results[j] = DeliveryResult.failed(new OutboxPublishException(
+                        results[j] = DeliveryResult.unavailable(new OutboxPublishException(
                                 "Interrupted publishing event " + events.get(j).eventId(), ex));
                     }
                 }

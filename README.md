@@ -22,7 +22,7 @@ Features:
 ## Requirements
 
 - **Java 21.** Maven is not needed; use the bundled wrapper, `./mvnw`.
-- **Docker:** optional, and only needed to run against a real Kafka broker. On a Mac, Docker Desktop works, or a command-line setup through Homebrew:
+- **Docker:** optional, and only needed to run against a real Kafka broker or PostgreSQL, and for the Postgres tests. On a Mac, Docker Desktop works, or a command-line setup through Homebrew:
   ```bash
   brew install colima docker docker-compose
   # let Docker find the Compose plugin:
@@ -30,7 +30,7 @@ Features:
   colima start          # starts the VM that runs containers; `colima stop` when done
   ```
 
-There is nothing else to install. The database is in-memory H2, created fresh on every start, with the schema applied by Flyway migrations.
+There is nothing else to install. By default the database is in-memory H2, created fresh on every start, with the schema applied by Flyway migrations. PostgreSQL is optional (see [Run with PostgreSQL](#run-with-postgresql-optional)).
 
 ## Build and test
 
@@ -42,6 +42,13 @@ There is nothing else to install. The database is in-memory H2, created fresh on
 ```
 
 The Kafka tests use an embedded broker, so Docker is not needed for tests either.
+
+`PostgresSmokeTest` runs the app on a real PostgreSQL through Testcontainers, and is skipped when Docker isn't available (the summary shows 6 skipped). With Colima, Testcontainers needs to be told where Docker is:
+
+```bash
+DOCKER_HOST=unix://$HOME/.colima/default/docker.sock \
+TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE=/var/run/docker.sock ./mvnw test
+```
 
 ## Run the app
 
@@ -163,7 +170,7 @@ Every error is `application/problem+json` with a stable `type` URI, for example:
 By default, outbox events are delivered in-process. With the `kafka` profile they go through a Kafka topic instead:
 
 ```bash
-docker compose up -d                                       # single-node Kafka on localhost:9092
+docker compose up -d kafka                                 # single-node Kafka on localhost:9092
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=kafka
 docker compose down                                        # when finished
 ```
@@ -192,6 +199,21 @@ docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-s
 The relay publishes a whole batch (up to `orders.outbox.batch-size`) before waiting for acks, so during an outage a relay pass waits at most about 10 s (`delivery.timeout.ms` in `application-kafka.properties`), however many events it holds. If the broker can't be reached at all, the pass stops after the first failed send. An outage doesn't use up delivery attempts: the relay pauses (1 s, doubling up to 60 s) and tries again, so however long Kafka is down, events wait and are published once it's back. Events with the same key are always delivered in order, even across retries.
 
 The automated tests use an embedded broker instead (`OutboxKafkaIntegrationTest`).
+
+## Run with PostgreSQL (optional)
+
+By default the data is in memory and gone on restart. The `postgres` profile uses a persistent PostgreSQL instead:
+
+```bash
+docker compose up -d postgres                                 # PostgreSQL 17 on localhost:5432
+./mvnw spring-boot:run -Dspring-boot.run.profiles=postgres    # or postgres,kafka for both
+```
+
+- **Data** lives in the `postgres-data` Docker volume, so orders survive restarts of both the app and the database. `docker compose down -v` deletes it.
+- **Schema:** Flyway applies the migrations on first start and only new ones after that.
+- **Connection:** database, user and password are all `orders` (in `src/main/resources/application-postgres.properties`).
+
+The app still runs as a single instance: two instances against one database would deliver outbox events twice.
 
 ## Configuration
 
