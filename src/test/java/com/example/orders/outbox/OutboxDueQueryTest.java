@@ -15,9 +15,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.domain.Limit;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * The head-of-line rule in {@link OutboxRepository#findDue}, against H2. The database is shared with
+ * The head-of-line rule in {@link OutboxRepository#findDueForClaim}, against H2. The database is shared with
  * other test classes, so each test uses its own keys and looks only at its own events.
  */
 @SpringBootTest
@@ -31,6 +32,9 @@ class OutboxDueQueryTest {
     @Autowired
     private JdbcTemplate jdbc;
 
+    @Autowired
+    private TransactionTemplate transaction;
+
     private OutboxEvent save(String key, Instant createdAt) {
         return repository.save(OutboxEvent.pending(UUID.randomUUID(), "partner-a", "TestEvent", key, "{}",
                 Clock.fixed(createdAt, ZoneOffset.UTC)));
@@ -43,10 +47,14 @@ class OutboxDueQueryTest {
     /** Which of {@code mine} the relay would pick now, in its order. */
     private List<UUID> dueAmong(OutboxEvent... mine) {
         List<UUID> ids = Arrays.stream(mine).map(OutboxEvent::getId).toList();
-        return repository.findDue(OutboxStatus.PENDING, NOW, Limit.unlimited()).stream()
-                .map(OutboxEvent::getId)
-                .filter(ids::contains)
-                .toList();
+        // The query locks what it returns, so it needs a transaction (rolled back: nothing is claimed).
+        return transaction.execute(status -> {
+            status.setRollbackOnly();
+            return repository.findDueForClaim(OutboxStatus.PENDING, NOW, Limit.unlimited()).stream()
+                    .map(OutboxEvent::getId)
+                    .filter(ids::contains)
+                    .toList();
+        });
     }
 
     private static String key() {

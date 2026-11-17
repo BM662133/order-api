@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 class OutboxPropertiesTest {
 
     private final OutboxProperties properties =
-            new OutboxProperties(50, 5, Duration.ofSeconds(1), Duration.ofSeconds(60));
+            new OutboxProperties(50, 5, Duration.ofSeconds(1), Duration.ofSeconds(60), Duration.ofSeconds(60));
 
     @ParameterizedTest
     @CsvSource({"1, 1", "2, 2", "3, 4", "6, 32", "7, 60", "100, 60"})
@@ -22,7 +22,7 @@ class OutboxPropertiesTest {
 
     @Test
     void zeroInitialBackoffMeansImmediateRetry() {
-        assertThat(new OutboxProperties(50, 5, Duration.ZERO, Duration.ofSeconds(60)).backoffAfter(3)).isZero();
+        assertThat(new OutboxProperties(50, 5, Duration.ZERO, Duration.ofSeconds(60), Duration.ofSeconds(60)).backoffAfter(3)).isZero();
     }
 
     @Test

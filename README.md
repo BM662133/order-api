@@ -213,7 +213,7 @@ docker compose up -d postgres                                 # PostgreSQL 17 on
 - **Schema:** Flyway applies the migrations on first start and only new ones after that.
 - **Connection:** database, user and password are all `orders` (in `src/main/resources/application-postgres.properties`).
 
-The app still runs as a single instance: two instances against one database would deliver outbox events twice.
+Several instances can share one database: each relay pass claims its events first (`SELECT … FOR UPDATE SKIP LOCKED` plus a 60 s lease), so every event is delivered by one instance, and events with the same key stay in order. The background sweeper is not yet coordinated, so two instances may each re-queue the same stalled order (harmless, but wasteful).
 
 ## Configuration
 
@@ -225,6 +225,7 @@ Every setting has a default in `src/main/resources/application.properties`. Over
 | `orders.outbox.poll-interval` | `500ms` | How often the relay checks for events to deliver |
 | `orders.outbox.max-attempts` | `5` | Delivery attempts before an event is given up |
 | `orders.outbox.initial-backoff` / `max-backoff` | `1s` / `60s` | Retry delay: doubles each attempt, up to the maximum |
+| `orders.outbox.claim-lease` | `60s` | How long a relay owns the events it picked; must be longer than one relay pass |
 | `orders.idempotency.key-ttl` | `24h` | How long an `Idempotency-Key` is reserved |
 | `orders.idempotency.purge-interval` | `1h` | How often expired keys are deleted |
 | `orders.provisioning.sweep.interval` | `1m` | How often the sweeper runs |

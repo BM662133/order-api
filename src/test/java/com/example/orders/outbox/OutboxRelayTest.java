@@ -24,16 +24,18 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
-import org.springframework.data.domain.Limit;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 /**
- * Bookkeeping per delivery result: processed, retried with backoff, dead after max attempts, untouched,
- * and pausing (without spending attempts) while the transport is unavailable.
+ * Bookkeeping per delivery result: processed, retried with backoff, dead after max attempts, released,
+ * pausing (without spending attempts) while the transport is unavailable, and dropping only the stale
+ * outcomes when another relay re-claimed an event.
  */
 class OutboxRelayTest {
 
     private static final Instant T0 = Instant.parse("2026-01-01T10:00:00Z");
     private static final int MAX_ATTEMPTS = 3;
+    private static final Duration LEASE = Duration.ofSeconds(60);
 
     /** A clock the test moves by hand, to step through the relay's pauses. */
     private static final class TestClock extends Clock {
@@ -61,16 +63,24 @@ class OutboxRelayTest {
 
     private final TestClock clock = new TestClock();
     private final OutboxRepository repository = mock(OutboxRepository.class);
+    private final OutboxClaims claims = mock(OutboxClaims.class);
     private final OutboxTransport transport = mock(OutboxTransport.class);
-    private final OutboxRelay relay = new OutboxRelay(repository, transport,
-            new OutboxProperties(50, MAX_ATTEMPTS, Duration.ofSeconds(1), Duration.ofSeconds(60)), clock);
+    private final OutboxRelay relay = new OutboxRelay(claims, new OutboxOutcomes(repository), transport,
+            new OutboxProperties(50, MAX_ATTEMPTS, Duration.ofSeconds(1), Duration.ofSeconds(60), LEASE), clock);
 
     private OutboxEvent event() {
         return OutboxEvent.pending(UUID.randomUUID(), "partner-a", "TestEvent", "key-" + UUID.randomUUID(), "{}", clock);
     }
 
+    /** Each pass claims these events, as OutboxClaims would: leased until now + LEASE. */
     private void due(OutboxEvent... events) {
-        when(repository.findDue(eq(OutboxStatus.PENDING), any(), eq(Limit.of(50)))).thenReturn(List.of(events));
+        when(claims.claimDue(any(), eq(50))).thenAnswer(invocation -> {
+            Instant now = invocation.getArgument(0);
+            for (OutboxEvent event : events) {
+                event.claim(now.plus(LEASE));
+            }
+            return List.of(events);
+        });
     }
 
     private static DeliveryResult unavailable() {
@@ -78,8 +88,8 @@ class OutboxRelayTest {
     }
 
     private long findDueCalls() {
-        return Mockito.mockingDetails(repository).getInvocations().stream()
-                .filter(invocation -> invocation.getMethod().getName().equals("findDue"))
+        return Mockito.mockingDetails(claims).getInvocations().stream()
+                .filter(invocation -> invocation.getMethod().getName().equals("claimDue"))
                 .count();
     }
 
@@ -132,6 +142,7 @@ class OutboxRelayTest {
             assertThat(e.getStatus()).isEqualTo(OutboxStatus.PROCESSED);
             assertThat(e.getProcessedAt()).isEqualTo(T0);
             assertThat(e.getAttempts()).isZero();
+            assertThat(e.getNextAttemptAt()).as("the lease ends with processing").isEqualTo(T0);
         });
         assertThat(saved()).containsExactly(first, second);
     }
@@ -153,9 +164,9 @@ class OutboxRelayTest {
         assertThat(failed.getLastError()).isEqualTo("IllegalStateException: boom");
         assertThat(skipped.getStatus()).isEqualTo(OutboxStatus.PENDING);
         assertThat(skipped.getAttempts()).isZero();
-        assertThat(skipped.getNextAttemptAt()).as("still due").isEqualTo(T0);
+        assertThat(skipped.getNextAttemptAt()).as("released: due again, not leased").isEqualTo(T0);
         assertThat(skipped.getLastError()).isNull();
-        assertThat(saved()).containsExactly(delivered, failed);
+        assertThat(saved()).containsExactly(delivered, failed, skipped);
     }
 
     @Test
@@ -202,7 +213,7 @@ class OutboxRelayTest {
     }
 
     @Test
-    void nothingDueTouchesNeitherTransportNorDatabase() {
+    void nothingClaimedTouchesNeitherTransportNorDatabase() {
         due();
 
         assertThat(relay.relayDue()).isZero();
@@ -223,7 +234,7 @@ class OutboxRelayTest {
     // ---------- transport unavailable ----------
 
     @Test
-    void unavailableAndSkippedEventsAreLeftUntouchedAndNothingIsSaved() {
+    void unavailableAndSkippedEventsAreReleasedWithNoAttemptCounted() {
         OutboxEvent hit = event();
         OutboxEvent skipped = event();
         due(hit, skipped);
@@ -234,10 +245,10 @@ class OutboxRelayTest {
         assertThat(List.of(hit, skipped)).allSatisfy(e -> {
             assertThat(e.getStatus()).isEqualTo(OutboxStatus.PENDING);
             assertThat(e.getAttempts()).isZero();
-            assertThat(e.getNextAttemptAt()).isEqualTo(T0);
+            assertThat(e.getNextAttemptAt()).as("the lease is given back").isEqualTo(T0);
             assertThat(e.getLastError()).isNull();
         });
-        verify(repository, never()).saveAll(any());
+        assertThat(saved()).containsExactly(hit, skipped);
     }
 
     @Test
@@ -300,7 +311,44 @@ class OutboxRelayTest {
         assertThat(acked.getStatus()).isEqualTo(OutboxStatus.PROCESSED);
         assertThat(lost.getStatus()).isEqualTo(OutboxStatus.PENDING);
         assertThat(lost.getAttempts()).isZero();
-        assertThat(saved()).containsExactly(acked);
+        assertThat(saved()).containsExactly(acked, lost);
         assertPausedFor(Duration.ofSeconds(1));
+    }
+
+    // ---------- another relay re-claimed an event ----------
+
+    private static ObjectOptimisticLockingFailureException stale(OutboxEvent event) {
+        return new ObjectOptimisticLockingFailureException(OutboxEvent.class, event.getId());
+    }
+
+    @Test
+    void aStaleOutcomeIsDroppedAndTheRestOfTheBatchIsStillSaved() {
+        OutboxEvent fresh = event();
+        OutboxEvent reclaimed = event();
+        due(fresh, reclaimed);
+        results(DeliveryResult.delivered(), DeliveryResult.delivered());
+        when(repository.saveAll(any())).thenThrow(stale(reclaimed));
+        when(repository.save(reclaimed)).thenThrow(stale(reclaimed));
+
+        assertThat(relay.relayDue()).isEqualTo(2);
+
+        verify(repository).save(fresh);
+        verify(repository).save(reclaimed);
+    }
+
+    @Test
+    void onDeadRunsOnlyIfTheDeadOutcomeWasSaved() {
+        OutboxEvent event = event();
+        due(event);
+        results(failed("boom"));
+        for (int i = 0; i < MAX_ATTEMPTS - 1; i++) {
+            relay.relayDue();
+        }
+        when(repository.saveAll(any())).thenThrow(stale(event));
+        when(repository.save(event)).thenThrow(stale(event));
+
+        relay.relayDue();
+
+        verify(transport, never()).onDead(any());
     }
 }

@@ -8,7 +8,6 @@ import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.data.domain.Limit;
 import org.springframework.stereotype.Component;
 
 /**
@@ -18,6 +17,9 @@ import org.springframework.stereotype.Component;
  *
  * <p>What "delivered" means depends on the transport: in-process, the handler finished; with Kafka, the
  * broker acknowledged the record (the listener then runs the handler with its own retries).
+ *
+ * <p>Safe to run on several instances at once: a pass claims its events first ({@link OutboxClaims}),
+ * delivers them outside any transaction, then records the outcomes ({@link OutboxOutcomes}).
  *
  * <p>When the transport reports itself {@linkplain DeliveryResult.Unavailable unavailable}, the relay
  * pauses (initial-backoff, doubling up to max-backoff) instead of spending the events' attempts. The pause
@@ -29,7 +31,8 @@ public class OutboxRelay {
 
     private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
 
-    private final OutboxRepository outboxRepository;
+    private final OutboxClaims claims;
+    private final OutboxOutcomes outcomes;
     private final OutboxTransport transport;
     private final OutboxProperties properties;
     private final Clock clock;
@@ -37,17 +40,18 @@ public class OutboxRelay {
     private Instant pausedUntil = Instant.MIN;
     private int consecutiveOutages;
 
-    public OutboxRelay(OutboxRepository outboxRepository, OutboxTransport transport, OutboxProperties properties,
+    OutboxRelay(OutboxClaims claims, OutboxOutcomes outcomes, OutboxTransport transport, OutboxProperties properties,
             Clock clock) {
-        this.outboxRepository = outboxRepository;
+        this.claims = claims;
+        this.outcomes = outcomes;
         this.transport = transport;
         this.properties = properties;
         this.clock = clock;
     }
 
     /**
-     * Delivers one batch of due events (oldest first, at most one per message key) and records each
-     * outcome in a single transaction. A failure is recorded on its own event and does not affect the
+     * Claims one batch of due events (oldest first, at most one per message key), delivers it, and
+     * records each outcome in a single transaction. A failure is recorded on its own event and does not affect the
      * others. Does nothing while paused after the transport was unavailable.
      *
      * @return how many events were attempted (delivered or failed; not counting ones the transport skipped
@@ -58,8 +62,7 @@ public class OutboxRelay {
         if (now.isBefore(pausedUntil)) {
             return 0;
         }
-        List<OutboxEvent> due = outboxRepository.findDue(OutboxStatus.PENDING, now,
-                Limit.of(properties.batchSize()));
+        List<OutboxEvent> due = claims.claimDue(now, properties.batchSize());
         if (due.isEmpty()) {
             return 0;
         }
@@ -89,20 +92,22 @@ public class OutboxRelay {
                     attempted++;
                 }
                 case DeliveryResult.Unavailable unavailable -> {
-                    // not this event's fault: left exactly as it was, and the relay pauses below
+                    // not this event's fault: released as it was, and the relay pauses below
+                    event.releaseClaim();
+                    changed.add(event);
                     if (outage == null) {
                         outage = unavailable.error();
                     }
                 }
                 case DeliveryResult.NotAttempted notAttempted -> {
-                    // left exactly as it was: no attempt counted, still due
+                    // released as it was: no attempt counted, due again at once
+                    event.releaseClaim();
+                    changed.add(event);
                 }
             }
         }
-        if (!changed.isEmpty()) {
-            outboxRepository.saveAll(changed);
-        }
-        died.forEach(this::notifyDead);
+        List<OutboxEvent> saved = outcomes.record(changed);
+        died.stream().filter(saved::contains).forEach(this::notifyDead);
         trackOutage(outage);
         return attempted;
     }

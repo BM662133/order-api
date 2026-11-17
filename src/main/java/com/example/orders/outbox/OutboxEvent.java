@@ -13,6 +13,7 @@ import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
 import jakarta.persistence.Version;
 
 /** A fact recorded in the same transaction as the change it describes, delivered later by {@link OutboxRelay}. */
@@ -56,7 +57,10 @@ public class OutboxEvent {
     @Column(name = "last_error")
     private String lastError;
 
-    /** Guards against two relays finishing the same event (multi-instance deployments). */
+    /**
+     * Fences relays: claiming bumps it, so a relay whose lease ran out (and whose event another relay
+     * re-claimed) fails to record its outcome instead of overwriting the newer one.
+     */
     @Version
     private Long version;
 
@@ -65,6 +69,10 @@ public class OutboxEvent {
 
     @Column(name = "processed_at")
     private Instant processedAt;
+
+    /** Not persisted: {@code nextAttemptAt} before this relay claimed the event, to release it unchanged. */
+    @Transient
+    private Instant dueBeforeClaim;
 
     protected OutboxEvent() {
     }
@@ -92,9 +100,17 @@ public class OutboxEvent {
         return new EventEnvelope(id, eventType, aggregateId, partnerId, messageKey, payload);
     }
 
+    /**
+     * Also ends the claim: a processed row keeps its original due time rather than a lease, so republishing
+     * it by setting it back to PENDING makes it due at once.
+     */
     void markProcessed(Clock clock) {
         this.status = OutboxStatus.PROCESSED;
         this.processedAt = now(clock);
+        if (dueBeforeClaim != null) {
+            this.nextAttemptAt = dueBeforeClaim;
+            this.dueBeforeClaim = null;
+        }
     }
 
     /** Counts a failed attempt and makes the event due again after {@code retryAfter}. */
@@ -106,6 +122,21 @@ public class OutboxEvent {
 
     void markDead() {
         this.status = OutboxStatus.DEAD;
+    }
+
+    /** Takes the event out of everyone else's due set until {@code leaseUntil}. */
+    void claim(Instant leaseUntil) {
+        this.dueBeforeClaim = nextAttemptAt;
+        this.nextAttemptAt = leaseUntil.truncatedTo(ChronoUnit.MICROS);
+    }
+
+    /** Gives a claimed event back exactly as it was (due when it was due), with no attempt counted. */
+    void releaseClaim() {
+        if (dueBeforeClaim == null) {
+            throw new IllegalStateException("Event " + id + " was not claimed");
+        }
+        this.nextAttemptAt = dueBeforeClaim;
+        this.dueBeforeClaim = null;
     }
 
     private static Instant now(Clock clock) {
@@ -158,5 +189,9 @@ public class OutboxEvent {
 
     public Instant getProcessedAt() {
         return processedAt;
+    }
+
+    Long getVersion() {
+        return version;
     }
 }
